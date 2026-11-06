@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+- **用量统计按后端 revision 缓存并持久化**。冷会话的 token / 轮次以前只放在内存里、30 秒过期，重开页面或重启 Host 就要把整份 JSONL 再解析一遍。现在样本按 `SessionPersistenceSnapshot.revision` 失效，写进 `$DSH_HOME/conversation-tree-stats.json`（原子替换、最多 2000 条、1 秒防抖）；后端不提供 revision 时仍退回原来的 30 秒 TTL。
+- **树页两阶段加载**。第一屏只取树的结构，画出来之后再补每个节点的 token / 轮次 / 模型，打开一个有很多冷对话的工作区不再卡在首屏等待所有日志解析完。
+- **读路径不再持有写锁**。`/tree` 与 `/forest` 在注册表不需要修复时直接读原子快照，只有确实要 promote pending 边或恢复丢失的祖先链时才拿跨进程锁，分支创建与删除不再被普通浏览阻塞。
+- **原生分支的只读接入**。带 `parentSession`、`isSeeded` 且不是子代理的会话，会按种子末尾的 `session/end-seed` 推算分叉点，作为 `external` 节点画进树里：只读，不写注册表，不提供归档和删除。注意 DSH 的 fork 目前不写 `parentSession`，所以这条要等上游补上那个字段才会真正生效；插件侧已经就绪。
+- 测试与工程：去掉写死的 `G:\workspace\demo` 夹具，测试在 macOS / Linux / Windows 上都能跑；新增 `stats.test.js`（revision 缓存、TTL 回退、重启后从 sidecar 恢复）和 `manifest.test.js`（宿主包必须是 peerDependencies、导出文件必须存在），共 69 项。
+- 新增三平台 × Node 22/24 的 CI。
+- 发布信息：去掉 `private`，补上 `repository` / `homepage` / `bugs`，现在可以 `npm publish` 或用 `dsh plugin add dsh-conversation-tree` 安装。
+- 版本 0.6.0。
+
 ## 0.5.0
 
 - 「对话树」工作区视图重做：不再是一张张卡片，而是**一条对话一棵树、全部平铺在同一块画布上**。每棵树上方只有一行标题（标题、分支数、状态、最近活动和收起箭头），没有卡片边框，树图本身沿用单树视图的节点、折线边、状态点与折叠箭头；当前对话排在左上并用蓝色标题与「当前对话」标记，其余按打开页面时的最近活动顺序排列；页面打开期间顺序保持稳定，新的对话追加在末尾，从未分过支的对话也以单节点树出现。

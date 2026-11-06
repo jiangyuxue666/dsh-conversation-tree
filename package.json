@@ -1,7 +1,6 @@
 {
   "name": "dsh-conversation-tree",
-  "version": "0.5.0",
-  "private": true,
+  "version": "0.6.0",
   "type": "module",
   "description": "A workspace-wide conversation-tree view for DeepSeek Harness: every conversation and every branch in one page, with its source turn, its own usage, bring-back, archive and subtree deletion.",
   "keywords": [
@@ -47,7 +46,15 @@
     }
   },
   "scripts": {
-    "test": "node --test conversation-tree.test.js client.test.js branch.test.js"
+    "test": "node --test conversation-tree.test.js client.test.js branch.test.js stats.test.js manifest.test.js"
   },
-  "author": "The dsh-conversation-tree authors"
+  "author": "The dsh-conversation-tree authors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jiangyuxue666/dsh-conversation-tree.git"
+  },
+  "homepage": "https://github.com/jiangyuxue666/dsh-conversation-tree#readme",
+  "bugs": {
+    "url": "https://github.com/jiangyuxue666/dsh-conversation-tree/issues"
+  }
 }

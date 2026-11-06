@@ -366,6 +366,64 @@ async function withTree(operation) {
 
 // --------------------------------------------------------------------- tree
 
+/** Every child id the registry already names, durable or pending. */
+function registeredChildren(known) {
+  return new Set([...known.edges, ...known.pending].map((edge) => edge.childId))
+}
+
+/**
+ * Read the registry without the write lock when nothing needs repairing.
+ *
+ * Promotion and chain recovery both write, so they keep the cross-process
+ * lock. A plain read of a settled workspace does not: it builds straight from
+ * an atomic snapshot, leaving the lock to branch creation and deletion.
+ *
+ * @param ctx - plugin context.
+ * @param ids - Session ids the caller is about to resolve.
+ * @param build - pure projection over the registry snapshot.
+ * @returns the projection's value.
+ */
+async function withTreeForRead(ctx, ids, build) {
+  const known = await treeRegistry()
+  const pending = known.pending.length > 0
+  const missing = ids.filter((id) => !registeredChildren(known).has(id))
+  if (!pending && missing.length === 0) return build(known)
+
+  // A missing id is only repairable when its header names a parent; that check
+  // is a header read, so it is cheaper than locking every ordinary read.
+  const parents = new Map()
+  for (const id of missing) {
+    const parentId = await parentOfSession(ctx, id).catch(() => undefined)
+    if (parentId !== undefined) parents.set(id, parentId)
+  }
+  if (!pending && parents.size === 0) return build(known)
+
+  return await withTree(async (fresh) => {
+    await promotePending(ctx, fresh).catch(() => {})
+    const recoverable = [...parents.keys()].filter((id) => !registeredChildren(fresh).has(id))
+    const recovered = await recoverChains(ctx, fresh, recoverable)
+    if (recovered.length > 0) {
+      const knownChildren = registeredChildren(fresh)
+      for (const edge of recovered) {
+        if (knownChildren.has(edge.childId)) continue
+        knownChildren.add(edge.childId)
+        fresh.edges.push(edge)
+      }
+      await saveTreeRegistry(fresh)
+    }
+    // Whatever the registry still cannot explain may be a fork DSH created
+    // itself: readable, but never persisted, so it can never be deleted here.
+    const adopted = []
+    for (const [id, parentId] of parents) {
+      if (registeredChildren(fresh).has(id)) continue
+      const edge = await externalEdgeOf(ctx, id, parentId).catch(() => undefined)
+      if (edge !== undefined) adopted.push(edge)
+    }
+    if (adopted.length === 0) return build(fresh)
+    return build({ edges: [...fresh.edges, ...adopted], pending: fresh.pending })
+  })
+}
+
 /**
  * Resolve the connected tree around one session.
  * The current session may be any node; its parent chain names the root.
@@ -431,6 +489,7 @@ function buildTree(known, sessionId) {
         title: edge.title,
         createdAt: edge.createdAt,
         pending: edge.pending,
+        external: edge.external === true,
         depth: (parent?.depth ?? 0) + 1,
         childCount: 0,
       })
@@ -453,16 +512,7 @@ async function readTree(ctx, request) {
   const includeStats = url.searchParams.get('stats') === '1'
   if (sessionId === '') return failure(400, 'missing-fields')
   try {
-    const payload = await withTree(async (known) => {
-      await promotePending(ctx, known).catch(() => {})
-      const recovered = await recoverChain(ctx, known, sessionId).catch(() => [])
-      if (recovered.length > 0) {
-        // Deepest first so a later read sees the whole chain already present.
-        known.edges.push(...recovered)
-        await saveTreeRegistry(known)
-      }
-      return buildTree(known, sessionId)
-    })
+    const payload = await withTreeForRead(ctx, [sessionId], (known) => buildTree(known, sessionId))
     pruneDeadHandles(ctx)
     if (includeStats) await augmentLiveStats(ctx, payload, request.signal)
     return json(payload)
@@ -500,21 +550,7 @@ async function readForest(ctx, request) {
   if (sessionIds.length > MAX_FOREST_SESSIONS) return failure(400, 'too-many-sessions')
   const includeStats = body.stats === true
   try {
-    const payload = await withTree(async (known) => {
-      await promotePending(ctx, known).catch(() => {})
-      const knownChildren = new Set([...known.edges, ...known.pending].map((edge) => edge.childId))
-      const missing = sessionIds.filter((id) => !knownChildren.has(id))
-      const recovered = await recoverChains(ctx, known, missing)
-      if (recovered.length > 0) {
-        for (const edge of recovered) {
-          if (knownChildren.has(edge.childId)) continue
-          knownChildren.add(edge.childId)
-          known.edges.push(edge)
-        }
-        await saveTreeRegistry(known)
-      }
-      return buildForest(known, sessionIds)
-    })
+    const payload = await withTreeForRead(ctx, sessionIds, (known) => buildForest(known, sessionIds))
     pruneDeadHandles(ctx)
     if (includeStats) {
       const nodes = payload.components.flatMap((component) => component.nodes)
@@ -615,6 +651,7 @@ function componentNodes(rootId, children) {
         title: edge.title,
         createdAt: edge.createdAt,
         pending: edge.pending,
+        external: edge.external === true,
         depth: parent.depth + 1,
         childCount: 0,
       }
@@ -668,13 +705,102 @@ function pruneDeadHandles(ctx) {
 
 /**
  * Reusable per-session usage samples. Reading a cold log means parsing every
- * event, and a deep tree asks for all of them on each refresh; a short TTL
- * keeps repeated refreshes from re-reading the same unchanged files.
+ * event, and a deep tree asks for all of them on each refresh. A sample is
+ * keyed by the backend's change token (`SessionPersistenceSnapshot.revision`),
+ * so an unchanged log is never re-read; a short TTL still covers backends that
+ * do not report one. The map survives a host restart through a small sidecar
+ * file, because the same workspace is usually opened again.
  */
 const STATS_CACHE = globalThis[Symbol.for('dsh-conversation-tree.stats-cache')]
   ?? (globalThis[Symbol.for('dsh-conversation-tree.stats-cache')] = new Map())
+/** Sidecar holding the samples, next to the tree registry. */
+const STATS_FILE = join(harnessHome(), 'conversation-tree-stats.json')
+/** Samples kept on disk; the oldest are dropped first. */
+const STATS_MAX_ENTRIES = 2000
 /** Cold logs read at once; a serial loop made a deep tree take minutes. */
 const STATS_READ_CONCURRENCY = 4
+
+let statsLoaded = false
+let statsDirty = false
+let statsWriteTimer
+
+/** Load the sidecar once per process; a missing or broken file means no cache. */
+async function loadStatsCache() {
+  if (statsLoaded) return
+  statsLoaded = true
+  let parsed
+  try {
+    parsed = JSON.parse(await readFile(STATS_FILE, 'utf8'))
+  } catch {
+    return
+  }
+  if (parsed === null || typeof parsed !== 'object' || parsed.version !== 1
+    || parsed.entries === null || typeof parsed.entries !== 'object') return
+  for (const [id, entry] of Object.entries(parsed.entries)) {
+    if (entry === null || typeof entry !== 'object') continue
+    if (entry.usage === undefined || entry.counts === undefined) continue
+    STATS_CACHE.set(id, {
+      revision: typeof entry.revision === 'string' ? entry.revision : undefined,
+      usage: entry.usage,
+      counts: entry.counts,
+      model: entry.model,
+      at: Number.isFinite(entry.at) ? entry.at : 0,
+    })
+  }
+}
+
+/** Mark the sidecar for a debounced rewrite; many samples arrive per tree. */
+function scheduleStatsPersist() {
+  statsDirty = true
+  if (statsWriteTimer !== undefined) return
+  statsWriteTimer = setTimeout(() => {
+    statsWriteTimer = undefined
+    void persistStats().catch(() => {})
+  }, 1000)
+  statsWriteTimer.unref?.()
+}
+
+/** Atomically replace the sidecar with the newest samples. */
+async function persistStats() {
+  if (!statsDirty) return
+  statsDirty = false
+  const newest = [...STATS_CACHE.entries()]
+    .filter(([, entry]) => entry !== null && typeof entry === 'object')
+    .sort((left, right) => (right[1].at ?? 0) - (left[1].at ?? 0))
+    .slice(0, STATS_MAX_ENTRIES)
+  const entries = {}
+  for (const [id, entry] of newest) {
+    entries[id] = {
+      ...(typeof entry.revision === 'string' ? { revision: entry.revision } : {}),
+      usage: entry.usage,
+      counts: entry.counts,
+      ...(entry.model === undefined ? {} : { model: entry.model }),
+      at: Number.isFinite(entry.at) ? entry.at : 0,
+    }
+  }
+  const temporary = `${STATS_FILE}.${randomUUID()}.tmp`
+  try {
+    const file = await open(temporary, 'wx', 0o600)
+    try {
+      await file.writeFile(JSON.stringify({ version: 1, entries }), 'utf8')
+      await file.sync()
+    } finally {
+      await file.close()
+    }
+    await rename(temporary, STATS_FILE)
+  } catch {
+    await unlink(temporary).catch(() => {})
+  }
+}
+
+/** The backend's change token for one stored session, when it reports one. */
+async function statsRevisionOf(persistence, sessionId) {
+  if (persistence === undefined || typeof persistence.stat !== 'function') return undefined
+  const snapshot = await persistence.stat(sessionId).catch(() => undefined)
+  const revision = snapshot?.revision
+  if (revision === undefined || revision === null) return undefined
+  return typeof revision === 'string' ? revision : String(revision)
+}
 
 /** Add each Session's own usage and Turn counts, reading cold logs when needed. */
 async function augmentLiveStats(ctx, payload, signal) {
@@ -691,7 +817,8 @@ async function augmentNodeStats(ctx, nodes, signal) {
   } catch {
     persistence = undefined
   }
-  if (STATS_CACHE.size > 512) STATS_CACHE.clear()
+  await loadStatsCache()
+  if (STATS_CACHE.size > STATS_MAX_ENTRIES * 2) pruneStatsCache()
   const cold = []
   const seen = new Set()
   for (const node of nodes) {
@@ -710,23 +837,31 @@ async function augmentNodeStats(ctx, nodes, signal) {
       STATS_CACHE.delete(node.id)
       continue
     }
+    if (persistence === undefined || typeof persistence.open !== 'function') continue
+    // The change token costs one header read and saves the whole log parse.
+    const revision = await statsRevisionOf(persistence, node.id)
     const cached = STATS_CACHE.get(node.id)
-    if (cached !== undefined && Date.now() - cached.at < STATS_TTL_MS) {
+    if (cached !== undefined && revision !== undefined && cached.revision === revision) {
       applyNodeStats(node, cached.usage, cached.counts, cached.model)
       continue
     }
-    if (persistence !== undefined && typeof persistence.open === 'function') cold.push(node)
+    if (cached !== undefined && revision === undefined && Date.now() - cached.at < STATS_TTL_MS) {
+      applyNodeStats(node, cached.usage, cached.counts, cached.model)
+      continue
+    }
+    cold.push({ node, revision })
   }
+  if (cold.length === 0) return
   let cursor = 0
   const worker = async () => {
     for (;;) {
       if (signal?.aborted) return
-      const node = cold[cursor]
+      const entry = cold[cursor]
       cursor += 1
-      if (node === undefined) return
+      if (entry === undefined) return
       let handle
       try {
-        handle = await persistence.open(node.id, 'read')
+        handle = await persistence.open(entry.node.id, 'read')
         const result = await handle.read()
         const inherited = Number.isSafeInteger(handle.inheritedEventCount) && handle.inheritedEventCount >= 0
           ? handle.inheritedEventCount
@@ -734,8 +869,9 @@ async function augmentNodeStats(ctx, nodes, signal) {
         const usage = ownUsage(result.events, inherited)
         const counts = ownCounts(result.events, inherited)
         const model = selectionOfEvents(result.events)
-        STATS_CACHE.set(node.id, { usage, counts, model, at: Date.now() })
-        applyNodeStats(node, usage, counts, model)
+        STATS_CACHE.set(entry.node.id, { ...(entry.revision === undefined ? {} : { revision: entry.revision }), usage, counts, model, at: Date.now() })
+        applyNodeStats(entry.node, usage, counts, model)
+        scheduleStatsPersist()
       } catch {
         /* unreadable cold session: leave the numbers absent, not zero */
       } finally {
@@ -744,6 +880,15 @@ async function augmentNodeStats(ctx, nodes, signal) {
     }
   }
   await Promise.all(Array.from({ length: Math.min(STATS_READ_CONCURRENCY, cold.length) }, worker))
+}
+
+/** Keep the newest samples; a workspace with many short sessions must not grow forever. */
+function pruneStatsCache() {
+  const newest = [...STATS_CACHE.entries()]
+    .sort((left, right) => (right[1].at ?? 0) - (left[1].at ?? 0))
+    .slice(0, STATS_MAX_ENTRIES)
+  STATS_CACHE.clear()
+  for (const [id, entry] of newest) STATS_CACHE.set(id, entry)
 }
 
 /** Publish one session's numbers onto its tree node. */
@@ -885,6 +1030,57 @@ async function edgeRecordOf(ctx, sessionId) {
     return undefined
   }
   return undefined
+}
+
+/**
+ * A session's header, live or from persistence metadata.
+ * @param ctx - plugin context.
+ * @param sessionId - session to inspect.
+ * @returns the header, or undefined when the session is unknown.
+ */
+async function headerOfSession(ctx, sessionId) {
+  const live = ctx.sessions.get(sessionId)
+  if (live !== undefined) return live.header
+  const persistence = ctx.get('sessionPersistence')
+  if (persistence === undefined || typeof persistence.stat !== 'function') return undefined
+  const snapshot = await persistence.stat(sessionId).catch(() => undefined)
+  return snapshot?.header
+}
+
+/**
+ * The read-only edge a seeded Session's own header implies.
+ *
+ * A fork created by DSH itself carries `parentSession` when the fork call
+ * passes it. The boundary is recoverable from the seed: `buildForkSeed` appends
+ * one `session/end-seed` marker right after the inherited prefix, so the cut is
+ * one event earlier. These nodes are shown but never written to the registry,
+ * because their ownership cannot be proven for deletion.
+ *
+ * @param ctx - plugin context.
+ * @param childId - seeded session.
+ * @param parentId - parent named by the header.
+ * @returns an external edge, or undefined when the session is not a plain fork.
+ */
+async function externalEdgeOf(ctx, childId, parentId) {
+  const header = await headerOfSession(ctx, childId)
+  if (header === undefined || header.isSeeded !== true) return undefined
+  // Subagent sessions also name a parent; they are not conversation branches.
+  if (header.origin !== undefined) return undefined
+  if (header.delegationDepth !== undefined && header.delegationDepth !== 0) return undefined
+  const events = await eventsOfSession(ctx, childId)
+  if (!Array.isArray(events)) return undefined
+  const marker = events.find((event) => event?.type === 'session/end-seed')
+  if (marker === undefined || !Number.isSafeInteger(marker.seq) || marker.seq < 1) return undefined
+  return {
+    childId,
+    parentId,
+    atSeq: marker.seq - 1,
+    turn: null,
+    snippet: '',
+    title: '',
+    createdAt: null,
+    external: true,
+  }
 }
 
 /** The durable parent a session's header names, without reading its whole log. */
@@ -2274,4 +2470,10 @@ export const __test = {
   readForest,
   ownUsage,
   ownCounts,
+  augmentNodeStats,
+  loadStatsCache,
+  persistStats,
+  pruneStatsCache,
+  scheduleStatsPersist,
+  statsCache: STATS_CACHE,
 }

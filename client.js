@@ -53,6 +53,7 @@ window.__ModuleLoader__.load({
       'inspector.cacheWrite': '缓存写入',
       'inspector.output': '输出',
       'inspector.cacheHit': '缓存命中 {percent}%',
+      'inspector.external': '原生分支（只读）',
       'inspector.model': '模型',
       'inspector.provider': '提供方',
       'inspector.reasoning': '推理',
@@ -204,6 +205,7 @@ window.__ModuleLoader__.load({
       'inspector.cacheWrite': 'Cache write',
       'inspector.output': 'Output',
       'inspector.cacheHit': 'Cache hit {percent}%',
+      'inspector.external': 'Native fork (read only)',
       'inspector.model': 'Model',
       'inspector.provider': 'Provider',
       'inspector.reasoning': 'Reasoning',
@@ -577,6 +579,14 @@ window.__ModuleLoader__.load({
             : []
           if (ids.length === 0) return undefined
           const includeStats = options.stats !== false
+          // Two passes: the tree paints as soon as its shape is known, then the
+          // per-Session numbers arrive. Reading a workspace of cold logs used to
+          // block the first frame on every one of them.
+          if (includeStats && options.defer !== false) {
+            const base = await this.loadForest(key, sessionIds, { ...options, stats: false })
+            if (base === undefined) return undefined
+            return await this.loadForest(key, sessionIds, { ...options, stats: true, defer: false }) ?? base
+          }
           const signature = `${ids.length}:${ids.join('|')}`
           if (options.force !== true) {
             const cached = state.forests[key]
@@ -2138,8 +2148,12 @@ window.__ModuleLoader__.load({
       const usage = entry.usage
       const model = entry.model
       const isRoot = parent === null
+      // A node adopted from a DSH-created fork has no registry edge, so it is
+      // readable but not owned here: no archive, no delete, no subtree action.
+      const external = entry.node?.external === true
       const canBring = graph.nodes.length > 1 && !entry.pending
-      const statusTrail = `${status.label} · ${t('inspector.branches', { count: entry.childCount })}`
+      const trail = `${status.label} · ${t('inspector.branches', { count: entry.childCount })}`
+      const statusTrail = external ? `${trail} · ${t('inspector.external')}` : trail
       const openLabel = entry.current ? t('inspector.goChat') : t('inspector.open')
 
       const usageRows = usage === null
@@ -2260,8 +2274,8 @@ window.__ModuleLoader__.load({
                   h('dd', { title: entry.workspace }, entry.workspace))
                 : null))),
 
-        isRoot
-          ? (entry.archived
+        isRoot || external
+          ? (isRoot && entry.archived
             ? h('div', { className: 'ct-side-danger' },
               h('button', {
                 type: 'button',
@@ -2653,7 +2667,7 @@ window.__ModuleLoader__.load({
 
       function requestArchive(nodeId) {
         const hit = located.get(nodeId)
-        if (hit === undefined) return
+        if (hit === undefined || hit.entry?.node?.external === true) return
         const model = hit.section.model
         const subtree = subtreeOf(model.tree, nodeId)
         // Archiving a running conversation stops its activity, so a leaf needs
@@ -2674,7 +2688,7 @@ window.__ModuleLoader__.load({
 
       function requestDelete(nodeId) {
         const hit = located.get(nodeId)
-        if (hit === undefined) return
+        if (hit === undefined || hit.entry?.node?.external === true) return
         const model = hit.section.model
         store.openDialog({
           kind: 'confirm',

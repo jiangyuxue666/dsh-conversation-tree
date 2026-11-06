@@ -20,7 +20,7 @@ beforeEach(async () => {
   await rm(join(home, 'conversation-tree.json'), { force: true })
 })
 
-const cwd = 'G:\\workspace\\demo'
+const cwd = join(tmpdir(), 'workspace', 'demo')
 const events = [
   { seq: 0, type: 'turn/start', time: 1, data: { turn: 1 } },
   {
@@ -391,6 +391,73 @@ test('readForest returns the component around a fresh branch and validates its b
     headers: { get: (name) => (name === 'origin' ? 'https://evil.example' : null) },
   }
   assert.equal((await readForest(ctx, crossOrigin)).status, 403)
+})
+
+test('readForest adopts a fork DSH created itself as a read-only branch', async () => {
+  const childEvents = [
+    { seq: 0, type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '问题' }] } },
+    { seq: 2, type: 'session/end-seed', data: { inherited: true } },
+  ]
+  const parent = {
+    header: { id: 'native-parent', cwd, isSeeded: false },
+    inheritedEventCount: 0,
+    options: { subagentDepth: 0 },
+    snapshotEvents: () => [],
+    append() {},
+  }
+  const child = {
+    header: { id: 'native-child', cwd, isSeeded: true, parentSession: 'native-parent' },
+    inheritedEventCount: 3,
+    options: { subagentDepth: 0 },
+    snapshotEvents: () => childEvents.map((event) => ({ ...event })),
+    append() {},
+  }
+  const ctx = {
+    agents: { get() { return undefined } },
+    sessions: {
+      get(id) {
+        if (id === 'native-child') return child
+        if (id === 'native-parent') return parent
+        return undefined
+      },
+    },
+    sessionProjections: { stateOf() { return undefined } },
+    get() { return undefined },
+    effect(callback) { return callback() },
+  }
+  const response = await readForest(ctx, request({ sessionIds: ['native-child'] }))
+  assert.equal(response.status, 200)
+  const forest = await response.json()
+  assert.equal(forest.components[0].rootId, 'native-parent')
+  const adopted = forest.components[0].nodes.find((node) => node.id === 'native-child')
+  assert.equal(adopted.external, true)
+  assert.equal(adopted.atSeq, 1)
+  // Adopted nodes stay out of the durable registry: no ownership, no deletion.
+  await assert.rejects(readFile(join(home, 'conversation-tree.json'), 'utf8'), { code: 'ENOENT' })
+})
+
+test('readForest leaves subagent sessions out of the tree', async () => {
+  const child = {
+    header: { id: 'subagent', cwd, isSeeded: true, parentSession: 'native-parent', origin: 'subagent' },
+    inheritedEventCount: 2,
+    options: { subagentDepth: 1 },
+    snapshotEvents: () => [
+      { seq: 0, type: 'turn/start', data: { turn: 1 } },
+      { seq: 1, type: 'session/end-seed', data: { inherited: true } },
+    ],
+    append() {},
+  }
+  const ctx = {
+    agents: { get() { return undefined } },
+    sessions: { get(id) { return id === 'subagent' ? child : undefined } },
+    sessionProjections: { stateOf() { return undefined } },
+    get() { return undefined },
+    effect(callback) { return callback() },
+  }
+  const forest = await (await readForest(ctx, request({ sessionIds: ['subagent'] }))).json()
+  assert.equal(forest.components[0].rootId, 'subagent')
+  assert.equal(forest.components[0].nodes.length, 1)
 })
 
 test('readForest fills each node with its own usage when stats are requested', async () => {

@@ -33,7 +33,7 @@ dsh plugin --profile web add /path/to/dsh-conversation-tree
 
 ```bash
 npm pack
-dsh plugin --profile web add ./dsh-conversation-tree-0.5.0.tgz
+dsh plugin --profile web add ./dsh-conversation-tree-0.6.0.tgz
 ```
 
 宿主包 `@deepseek-ai/dsh-session` 声明为 peerDependency：链接安装时由 DSH 提供，无需额外安装；想把它放到插件本地目录或要在本地跑测试时，再执行 `npm install`。
@@ -64,10 +64,8 @@ dsh plugin --profile web add ./dsh-conversation-tree-0.5.0.tgz
 
 ```bash
 npm install
-node --test conversation-tree.test.js client.test.js branch.test.js
+npm test
 ```
-
-测试样例里的工作区路径是 Windows 形式，整套用例请在 Windows 上运行。
 
 Host 路由：
 
@@ -84,7 +82,7 @@ Host 路由：
 
 ## 版本
 
-当前 0.5.0，历史记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前 0.6.0，历史记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 
