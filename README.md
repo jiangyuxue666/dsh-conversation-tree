@@ -17,13 +17,7 @@ DSH Web 插件。把工作区里的所有对话和它们派生出的分支放在
 
 要求 DSH `>=0.2.2-rc.1 <0.3.0`。
 
-**从 npm 安装**
-
-```bash
-dsh plugin --profile web add @jiangyuxue666/dsh-conversation-tree
-```
-
-**从 GitHub 安装**（暂无 npm 版本时可用）
+**从 GitHub 安装**
 
 ```bash
 dsh plugin --profile web add github:jiangyuxue666/dsh-conversation-tree
@@ -34,11 +28,14 @@ dsh plugin --profile web add github:jiangyuxue666/dsh-conversation-tree
 
 命令会把插件加进该 profile 的 `dsh.profile.bundles`，装完重启 DSH 并刷新页面。
 
+> npm 包尚未发布。发布之后这里会换成
+> `dsh plugin --profile web add @jiangyuxue666/dsh-conversation-tree`。
+
 **从压缩包安装**
 
 ```bash
-npm pack
-dsh plugin --profile web add ./dsh-conversation-tree-0.6.3.tgz
+npm pack          # 生成 jiangyuxue666-dsh-conversation-tree-<版本>.tgz
+dsh plugin --profile web add ./jiangyuxue666-dsh-conversation-tree-0.7.0.tgz
 ```
 
 **本地开发**
@@ -109,7 +106,7 @@ Host 路由：
 
 ## 版本
 
-当前 0.6.3，历史记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前 0.7.0，历史记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 
