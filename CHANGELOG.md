@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.3
+
+- 修 0.6.2 的「包内容守卫」测试在 Windows 上误报：它用 `path.join` 拼导入路径，Windows 得到反斜杠，和 `package.json` 的 `files`（正斜杠）比较时永远不相等，于是 CI 在 `windows-latest` 上红。现在统一规范化成正斜杠再比较。插件运行代码没有改动。
+- 版本 0.6.3。
+
 ## 0.6.2
 
 - **Host 代码按职责拆分**，行为不变：`index.js` 从 2492 行降到 159 行，只保留路由常量、`inject`、`apply` 和测试导出；实现移入 `lib/` 下的 11 个模块——`registry`（边注册表与跨进程锁）、`tree`（读取与投影）、`branch`、`summarize`、`delete`、`stats`（用量统计与缓存）、`session`（会话头与日志读取）、`models`、`transcript`、`handles`、`base`（HTTP 与公共工具）。

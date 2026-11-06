@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, stat } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = dirname(fileURLToPath(import.meta.url))
@@ -58,7 +58,9 @@ test('every module the entry imports ships with the package', async () => {
     seen.add(file)
     const source = await readFile(join(root, file), 'utf8')
     for (const match of source.matchAll(/from '(\.[^']+)'/g)) {
-      const target = join(file, '..', match[1]).replace(/^\.\//, '')
+      // Import specifiers are POSIX URLs; package.json's `files` uses POSIX
+      // separators too, so normalize before comparing on Windows.
+      const target = join(dirname(file), match[1]).replaceAll(sep, '/').replace(/^\.\//, '')
       imports.push(target)
       queue.push(target)
     }
