@@ -232,7 +232,7 @@ test('formatRelative produces localized relative time', () => {
 })
 
 test('buildGraph lays the tree out top down and keeps every node', () => {
-  const graph = buildGraph(tree, { sessions, archived: new Set(['c']) })
+  const graph = buildGraph(tree, { sessions, archived: new Set(['c']), showArchived: true })
   assert.equal(graph.nodes.length, 4)
   assert.equal(graph.root.id, 'r')
   assert.equal(graph.current.id, 'b')
@@ -251,6 +251,40 @@ test('buildGraph lays the tree out top down and keeps every node', () => {
   assert.equal(graph.bounds.width > graph.byId.get('c').x + 100, true)
   assert.equal(graph.bounds.height > graph.byId.get('b').y + 50, true)
   assert.match(graph.edges.find((edge) => edge.childId === 'b')?.id ?? '', /^a:b$/)
+})
+
+test('buildGraph hides archived subtrees unless the view asks for them', () => {
+  const hidden = buildGraph(tree, { sessions, archived: new Set(['c']) })
+  assert.deepEqual(hidden.nodes.map((entry) => entry.id), ['r', 'a', 'b'])
+  assert.equal(hidden.byId.has('c'), false)
+  assert.equal(hidden.hasArchived, true)
+  assert.equal(hidden.hiddenArchived, true)
+
+  const shown = buildGraph(tree, { sessions, archived: new Set(['c']), showArchived: true })
+  assert.equal(shown.nodes.length, 4)
+  assert.equal(shown.hiddenArchived, false)
+})
+
+test('buildGraph collapses a subtree and reports how many nodes it hides', () => {
+  const graph = buildGraph(tree, { sessions, collapsed: new Set(['a']) })
+  assert.deepEqual(graph.nodes.map((entry) => entry.id), ['r', 'a', 'c'])
+  const parent = graph.byId.get('a')
+  assert.equal(parent.collapsed, true)
+  assert.equal(parent.hasChildren, true)
+  assert.equal(parent.hiddenCount, 1)
+  assert.equal(graph.byId.get('b'), undefined)
+  assert.equal(graph.byId.get('r').hasChildren, true)
+  assert.equal(graph.byId.get('r').collapsed, false)
+})
+
+test('buildGraph marks search hits and dims everything else', () => {
+  const graph = buildGraph(tree, { sessions, query: '分支 B' })
+  assert.equal(graph.query, '分支 b')
+  assert.equal(graph.matchedCount, 1)
+  assert.equal(graph.byId.get('b').highlight, true)
+  assert.equal(graph.byId.get('b').dimmed, false)
+  assert.equal(graph.byId.get('a').dimmed, true)
+  assert.equal(buildGraph(tree, { sessions, query: 'missing' }).matchedCount, 0)
 })
 
 test('compact layout indents a vertical stack and keeps the branch suffix readable', () => {

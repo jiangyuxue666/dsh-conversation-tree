@@ -73,6 +73,24 @@ window.__ModuleLoader__.load({
       'head.refresh': '刷新',
       'head.retry': '重新加载',
       'head.loading': '正在读取对话树…',
+      'head.search': '搜索标题或片段',
+      'head.searchCount': '{count} 个匹配',
+      'head.showArchived': '显示已归档',
+      'head.hideArchived': '隐藏已归档',
+      'node.expand': '展开分支',
+      'node.collapse': '折叠分支',
+      'node.hiddenCount': '{count} 个分支已折叠',
+      'node.untitled': '未命名分支',
+      'node.tokens': 'tok',
+      'graph.hint': '方向键切换节点，回车打开，Esc 退出搜索',
+      'dialog.close': '关闭',
+      'inspector.tokens': 'tok',
+      'target.preview': '摘要预览',
+      'target.previewHint': '可以修改后再发送；这段文字会作为一条消息进入目标对话。',
+      'target.regenerate': '重新压缩',
+      'target.send': '发送',
+      'target.back': '返回',
+      'target.truncated': '摘要达到长度上限，可能不完整，建议先补一句再发送。',
       'root.badge': '根对话',
       'node.archived': '已归档',
       'node.pending': '登记中',
@@ -107,6 +125,7 @@ window.__ModuleLoader__.load({
       'confirm.archive.title': '归档这棵子树？',
       'confirm.archive.body': '「{title}」及其下的所有分支会从默认视图中隐藏；之后可以在「显示已归档」里恢复。',
       'confirm.archive.leaf': '「{title}」会从默认视图中隐藏；之后可以在「显示已归档」里恢复。',
+      'confirm.archive.running': '这条对话正在运行，归档会先停止它。',
       'confirm.children': '这个节点下面还有 {count} 个分支，整棵子树共 {total} 个对话，将一起处理。',
       'confirm.list': '将影响：',
       'confirm.target': '当前节点',
@@ -118,6 +137,7 @@ window.__ModuleLoader__.load({
       'error.network': '连接不上本地服务',
       'error.timeout': '请求超时，请重试',
       'error.unauthorized': '页面需要刷新后才能调用本地服务',
+      'error.cross-origin': '这个请求来自其他站点，已被拒绝',
       'error.session-not-loaded': '这条对话还没有加载，请先打开它',
       'error.session-header-unavailable': '读不到这条对话的会话头',
       'error.subagent-not-supported': '暂不支持从子代理会话创建对话树分支',
@@ -209,6 +229,23 @@ window.__ModuleLoader__.load({
       'head.refresh': 'Refresh',
       'head.retry': 'Reload',
       'head.loading': 'Reading the conversation tree…',
+      'head.search': 'Search titles or excerpts',
+      'head.searchCount': '{count} matches',
+      'head.hideArchived': 'Hide archived',
+      'node.expand': 'Expand branch',
+      'node.collapse': 'Collapse branch',
+      'node.hiddenCount': '{count} branches collapsed',
+      'node.untitled': 'Untitled branch',
+      'node.tokens': 'tok',
+      'graph.hint': 'Arrow keys move, Enter opens, Escape clears the search',
+      'dialog.close': 'Close',
+      'inspector.tokens': 'tokens',
+      'target.preview': 'Summary preview',
+      'target.previewHint': 'Edit before sending; this text is posted as one message into the target conversation.',
+      'target.regenerate': 'Compress again',
+      'target.send': 'Send',
+      'target.back': 'Back',
+      'target.truncated': 'The summary hit its length limit and may be incomplete; add a line before sending.',
       'head.errorTitle': 'The conversation tree could not be read',
       'path.current': 'Current position',
       'path.root': 'Root',
@@ -266,6 +303,7 @@ window.__ModuleLoader__.load({
       'confirm.archive.title': 'Archive this subtree?',
       'confirm.archive.body': '「{title}」 and every branch below it will disappear from the default view; you can restore them with 「Show archived」.',
       'confirm.archive.leaf': '「{title}」 will disappear from the default view; you can restore it with 「Show archived」.',
+      'confirm.archive.running': 'This conversation is running; archiving stops it first.',
       'confirm.children': 'This node has {count} branch(es) below it; the whole subtree has {total} conversation(s) and will be processed together.',
       'confirm.list': 'Affected:',
       'confirm.target': 'Selected node',
@@ -277,6 +315,7 @@ window.__ModuleLoader__.load({
       'error.network': 'Cannot reach the local host',
       'error.timeout': 'The request timed out; try again',
       'error.unauthorized': 'Refresh the page before calling the local host',
+      'error.cross-origin': 'This request came from another site and was rejected',
       'error.session-not-loaded': 'This conversation is not loaded yet — open it first',
       'error.session-header-unavailable': 'The session header is unavailable',
       'error.subagent-not-supported': 'A tree branch cannot be created from a subagent session',
@@ -419,6 +458,16 @@ window.__ModuleLoader__.load({
       return h(Svg, { size, className }, h('path', { d: 'm5 12.5 4.2 4.2L19 7' }))
     }
 
+    function IconSearch({ size = 15, className }) {
+      return h(Svg, { size, className },
+        h('circle', { cx: '11', cy: '11', r: '6.2' }),
+        h('path', { d: 'm15.6 15.6 4 4' }))
+    }
+
+    function IconChevron({ size = 14, className }) {
+      return h(Svg, { size, className }, h('path', { d: 'm8 5 6 5-6 5' }))
+    }
+
     function IconClose({ size = 16, className }) {
       return h(Svg, { size, className }, h('path', { d: 'M6 6l12 12M18 6 6 18' }))
     }
@@ -455,6 +504,9 @@ window.__ModuleLoader__.load({
       const listeners = new Set()
       const inflight = new Map()
       const noticeTimers = new Map()
+      // Every invalidation bumps the epoch; a response that started under an
+      // older epoch must not write its tree back over a newer one.
+      let treeEpoch = 0
       let toastTimer = 0
       const emit = () => {
         for (const listener of [...listeners]) listener()
@@ -485,6 +537,7 @@ window.__ModuleLoader__.load({
             if (active !== undefined) return active
           }
           const operation = (async () => {
+            const epoch = treeEpoch
             set({
               loading: { ...state.loading, [sessionId]: true },
               errors: withoutKey(state.errors, sessionId),
@@ -492,6 +545,14 @@ window.__ModuleLoader__.load({
             try {
               const suffix = includeStats ? '&stats=1' : ''
               const data = await requestJson(`${TREE_ROUTE}?sessionId=${encodeURIComponent(sessionId)}${suffix}`, { method: 'GET' })
+              const previous = state.trees[sessionId]
+              // A base tree never replaces the stats tree of the same epoch (it
+              // would drop every usage number), and a pre-invalidation response
+              // never replaces a tree refreshed after the change.
+              if (epoch !== treeEpoch || (includeStats === false && previous?.stats === true)) {
+                set({ loading: withoutKey(state.loading, sessionId) })
+                return previous
+              }
               const tree = { ...data, stats: includeStats, fetchedAt: Date.now() }
               set({
                 trees: { ...state.trees, [sessionId]: tree },
@@ -512,7 +573,18 @@ window.__ModuleLoader__.load({
           inflight.set(requestKey, operation)
           return operation
         },
-        invalidateTrees() {
+        invalidateTrees(sessionIds) {
+          treeEpoch += 1
+          if (Array.isArray(sessionIds)) {
+            const trees = { ...state.trees }
+            const errors = { ...state.errors }
+            for (const id of sessionIds) {
+              delete trees[id]
+              delete errors[id]
+            }
+            set({ trees, errors })
+            return
+          }
           set({ trees: {}, errors: {} })
         },
         toast(kind, text) {
@@ -692,7 +764,7 @@ window.__ModuleLoader__.load({
     function titleOfNode(sessions, node) {
       const session = sessionOf(sessions, node.id)
       const title = session?.title || session?.displayTitle || node.title
-      return typeof title === 'string' && title.trim() !== '' ? title.trim() : '未命名分支'
+      return typeof title === 'string' && title.trim() !== '' ? title.trim() : t('node.untitled')
     }
 
     /** The shortest title that still distinguishes one branch card from its siblings. */
@@ -1106,6 +1178,42 @@ window.__ModuleLoader__.load({
         list.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.id.localeCompare(b.id))
       }
 
+      // Archived nodes stay out of the default view; descendants of a hidden
+      // node go with it, because archiving always covers the subtree. The root
+      // is never hidden: the page needs a node to draw.
+      const hidden = new Set()
+      if (options?.showArchived !== true) {
+        const hideUnder = (node) => {
+          for (const child of children.get(node.id) ?? []) {
+            if (child.id === rootNode.id || hidden.has(child.id)) continue
+            if (archived.has(child.id)) hidden.add(child.id)
+            hideUnder(child)
+          }
+        }
+        hideUnder(rootNode)
+      }
+      const collapsed = options?.collapsed instanceof Set ? options.collapsed : new Set()
+      const visibleKids = (node) => (children.get(node.id) ?? []).filter((kid) => !hidden.has(kid.id))
+      const countDescendants = (nodeId) => {
+        let total = 0
+        const stack = [...(children.get(nodeId) ?? [])]
+        while (stack.length > 0) {
+          const next = stack.pop()
+          total += 1
+          stack.push(...(children.get(next.id) ?? []))
+        }
+        return total
+      }
+
+      const query = typeof options?.query === 'string' ? options.query.trim().toLowerCase() : ''
+      const matches = new Set()
+      if (query !== '') {
+        for (const node of tree.nodes) {
+          const haystack = `${titleOfNode(sessions, node)} ${node.snippet ?? ''}`.toLowerCase()
+          if (haystack.includes(query)) matches.add(node.id)
+        }
+      }
+
       const currentId = tree.currentId ?? rootNode.id
       const pathIds = new Set()
       let cursor = raw.get(currentId) ?? rootNode
@@ -1147,10 +1255,16 @@ window.__ModuleLoader__.load({
           usage: node.statsAvailable === true
             ? tokenStatsFromCounts(node.usage)
             : (node.parentId === null ? tokenStatsOf(sessions, node.id) : null),
-          model: modelStatsOf(sessions, node.id),
+          model: modelStatsOf(sessions, node.id) ?? modelOfNode(node),
           turns: node.statsAvailable === true && Number.isSafeInteger(node.turns) ? node.turns : null,
           steps: node.statsAvailable === true && Number.isSafeInteger(node.steps) ? node.steps : null,
           childCount: kids.length,
+          hasChildren: kids.length > 0,
+          collapsed: collapsed.has(node.id),
+          hiddenCount: collapsed.has(node.id) ? countDescendants(node.id) : 0,
+          matches: matches.size === 0 || matches.has(node.id),
+          highlight: matches.size > 0 && matches.has(node.id),
+          dimmed: matches.size > 0 && !matches.has(node.id),
         }
         byId.set(node.id, entry)
         if (parent !== null) {
@@ -1170,7 +1284,7 @@ window.__ModuleLoader__.load({
         // indented stack instead of scaling the desktop graph to 54%.
         let row = 0
         const walk = (node, depth, parent) => {
-          const kids = children.get(node.id) ?? []
+          const kids = visibleKids(node)
           const entry = makeEntry(
             node,
             depth,
@@ -1182,14 +1296,14 @@ window.__ModuleLoader__.load({
             kids,
           )
           row += 1
-          entry.kids = kids.map((kid) => walk(kid, depth + 1, node))
+          entry.kids = collapsed.has(node.id) ? [] : kids.map((kid) => walk(kid, depth + 1, node))
           return entry
         }
         root = walk(rootNode, 0, null)
       } else {
         const walk = (node, depth, parent) => {
-          const kids = children.get(node.id) ?? []
-          const placedKids = kids.map((kid) => walk(kid, depth + 1, node))
+          const kids = visibleKids(node)
+          const placedKids = collapsed.has(node.id) ? [] : kids.map((kid) => walk(kid, depth + 1, node))
           let x
           if (placedKids.length === 0) {
             x = nextLeafX
@@ -1224,7 +1338,21 @@ window.__ModuleLoader__.load({
           height: maxY + GRAPH_PAD,
         },
         branchCount: tree.branchCount ?? Math.max(0, ordered.length - 1),
-        hasArchived: ordered.some((entry) => entry.archived),
+        hasArchived: tree.nodes.some((node) => archived.has(node.id)),
+        hiddenArchived: hidden.size > 0,
+        matchedCount: matches.size,
+        query,
+      }
+    }
+
+    /** The model the host read from this Session's own events, if any. */
+    function modelOfNode(node) {
+      const selection = node?.model
+      if (selection === null || typeof selection !== 'object') return null
+      return {
+        provider: typeof selection.provider === 'string' ? selection.provider : '',
+        model: typeof selection.model === 'string' ? selection.model : '',
+        reasoning: typeof selection.reasoningEffort === 'string' ? selection.reasoningEffort : '',
       }
     }
 
@@ -1266,6 +1394,11 @@ window.__ModuleLoader__.load({
       const sessions = useSessions((value) => value)
       const workspaces = useWorkspaces((value) => value)
       const [selectedId, setSelectedId] = React.useState(null)
+      const [query, setQuery] = React.useState('')
+      const [showArchived, setShowArchived] = React.useState(false)
+      const [collapsed, setCollapsed] = React.useState(() => new Set())
+      const [center, setCenter] = React.useState(null)
+      const centerSeq = React.useRef(0)
       const compact = useCompactLayout()
       const tree = state.trees[sessionId]
       const loading = state.loading[sessionId] === true
@@ -1273,9 +1406,18 @@ window.__ModuleLoader__.load({
       const notice = state.notices[sessionId]
       const archived = React.useMemo(() => archivedSetOf(workspaces), [workspaces])
       const graph = React.useMemo(
-        () => buildGraph(tree, { sessions, archived, compact }),
-        [tree, sessions, archived, compact],
+        () => buildGraph(tree, { sessions, archived, compact, showArchived, collapsed, query }),
+        [tree, sessions, archived, compact, showArchived, collapsed, query],
       )
+      const graphRef = React.useRef(graph)
+      graphRef.current = graph
+
+      const focusNode = React.useCallback((id) => {
+        if (typeof id !== 'string' || id === '') return
+        centerSeq.current += 1
+        setSelectedId(id)
+        setCenter({ id, seq: centerSeq.current })
+      }, [])
 
       React.useEffect(() => {
         void store.loadTree(sessionId, false, true)
@@ -1291,6 +1433,15 @@ window.__ModuleLoader__.load({
         if (selectedId !== null && graph.byId.has(selectedId)) return
         setSelectedId(graph.current.id)
       }, [graph, selectedId])
+
+      // A search that matches something moves the canvas to the first hit, so a
+      // deep tree cannot leave the answer outside the viewport.
+      React.useEffect(() => {
+        const current = graphRef.current
+        if (current === null || query.trim() === '') return
+        const hit = current.nodes.find((entry) => entry.matches)
+        if (hit !== undefined) focusNode(hit.id)
+      }, [query, focusNode])
 
       async function refresh() {
         const next = await store.loadTree(sessionId, true, true)
@@ -1309,9 +1460,21 @@ window.__ModuleLoader__.load({
         })
       }
 
+      function toggleCollapse(nodeId) {
+        setCollapsed((current) => {
+          const next = new Set(current)
+          if (next.has(nodeId)) next.delete(nodeId)
+          else next.add(nodeId)
+          return next
+        })
+      }
+
       function requestArchive(nodeId) {
         const subtree = subtreeOf(tree, nodeId)
-        if (subtree.length > 1) {
+        const entry = graphRef.current?.byId.get(nodeId)
+        // Archiving a running conversation stops its activity, so a leaf needs
+        // the same confirmation a subtree already gets.
+        if (subtree.length > 1 || (entry !== undefined && entry.running)) {
           store.openDialog({ kind: 'confirm', action: 'archive', sessionId, nodeId })
           return
         }
@@ -1337,7 +1500,7 @@ window.__ModuleLoader__.load({
 
       if (error !== undefined && tree === undefined) {
         return h('section', { className: 'ct-page' },
-          h(TreeHeader, { graph: null, loading, notice, onRefresh: refresh }),
+          h(TreeHeader, { graph: null, loading, notice, onRefresh: refresh, query: '', onQuery: () => {} }),
           h('div', { className: 'ct-state' },
             h('p', null, error),
             h('button', { type: 'button', className: 'ct-btn', onClick: refresh }, t('head.retry'))))
@@ -1350,13 +1513,26 @@ window.__ModuleLoader__.load({
         : graph.byId.get(selectedId) ?? graph.current
 
       return h('section', { className: 'ct-page' },
-        h(TreeHeader, { graph, loading, notice, onRefresh: refresh }),
+        h(TreeHeader, {
+          graph,
+          loading,
+          notice,
+          onRefresh: refresh,
+          query,
+          onQuery: setQuery,
+          showArchived,
+          onToggleArchived: () => setShowArchived((value) => !value),
+        }),
         h('div', { className: 'ct-body' },
           h(TreeCanvas, {
             graph,
             selectedId: selected.id,
+            center,
             onSelect: setSelectedId,
             onOpen: openNode,
+            onFocus: focusNode,
+            onEscape: () => setQuery(''),
+            onToggleCollapse: toggleCollapse,
           }),
           h(NodeInspector, {
             entry: selected,
@@ -1373,11 +1549,12 @@ window.__ModuleLoader__.load({
           })))
     }
 
-    function TreeHeader({ graph, loading, notice, onRefresh }) {
+    function TreeHeader({ graph, loading, notice, onRefresh, query = '', onQuery, showArchived = false, onToggleArchived }) {
       const count = graph === null
         ? ''
         : t('head.count', { branches: graph.branchCount, nodes: graph.nodes.length })
       const status = notice?.text ?? count
+      const matched = graph === null || graph.query === '' ? null : graph.matchedCount
       return h('header', { className: 'ct-top' },
         h('div', { className: 'ct-top-title' },
           h('h1', { className: 'ct-h1' }, t('view.tree')),
@@ -1392,6 +1569,36 @@ window.__ModuleLoader__.load({
             h('span', null, status))
             : null),
         h('div', { className: 'ct-top-actions' },
+          typeof onQuery === 'function'
+            ? h('div', { className: 'ct-search' },
+              h(IconSearch, { size: 14 }),
+              h('input', {
+                type: 'search',
+                className: 'ct-search-input',
+                value: query,
+                placeholder: t('head.search'),
+                'aria-label': t('head.search'),
+                onChange: (event) => onQuery(event.target.value),
+                onKeyDown: (event) => {
+                  if (event.key !== 'Escape') return
+                  event.stopPropagation()
+                  onQuery('')
+                },
+              }),
+              matched === null
+                ? null
+                : h('span', { className: 'ct-search-count' }, t('head.searchCount', { count: matched })))
+            : null,
+          graph !== null && graph.hasArchived && typeof onToggleArchived === 'function'
+            ? h('button', {
+              type: 'button',
+              className: 'ct-icon-btn',
+              'aria-pressed': showArchived,
+              onClick: onToggleArchived,
+              title: showArchived ? t('head.hideArchived') : t('head.showArchived'),
+              'aria-label': showArchived ? t('head.hideArchived') : t('head.showArchived'),
+            }, showArchived ? h(IconUnarchive, { size: 15 }) : h(IconArchive, { size: 15 }))
+            : null,
           h('button', {
             type: 'button',
             className: 'ct-icon-btn',
@@ -1401,7 +1608,7 @@ window.__ModuleLoader__.load({
           }, loading ? h(Spinner, { size: 14 }) : h(IconRefresh, { size: 15 }))))
     }
 
-    function TreeCanvas({ graph, selectedId, onSelect, onOpen }) {
+    function TreeCanvas({ graph, selectedId, center, onSelect, onOpen, onFocus, onEscape, onToggleCollapse }) {
       const viewportRef = React.useRef(null)
       const [view, setView] = React.useState({ x: 0, y: 0, scale: 1 })
       const [dragging, setDragging] = React.useState(false)
@@ -1409,6 +1616,11 @@ window.__ModuleLoader__.load({
       viewRef.current = view
       const touched = React.useRef(false)
       const pan = React.useRef(null)
+      const pointers = React.useRef(new Map())
+      const pinch = React.useRef(0)
+      const centeredSeq = React.useRef(-1)
+      const graphRef = React.useRef(graph)
+      graphRef.current = graph
 
       const fit = React.useCallback(() => {
         const viewport = viewportRef.current
@@ -1477,7 +1689,73 @@ window.__ModuleLoader__.load({
         return () => viewport.removeEventListener('wheel', onWheel)
       }, [zoomAt])
 
+      // Center the focused node when the selection came from the keyboard or a
+      // search, without fighting a manual pan.
+      React.useEffect(() => {
+        if (center === null || center === undefined || center.seq === centeredSeq.current) return
+        const entry = graphRef.current?.byId.get(center.id)
+        const viewport = viewportRef.current
+        if (entry === undefined || viewport === null) return
+        centeredSeq.current = center.seq
+        const current = viewRef.current
+        setView({
+          scale: current.scale,
+          x: viewport.clientWidth / 2 - (entry.x + entry.width / 2) * current.scale,
+          y: viewport.clientHeight / 2 - (entry.y + entry.height / 2) * current.scale,
+        })
+        touched.current = true
+      }, [center])
+
+      function onKeyDown(event) {
+        if (event.target?.tagName === 'INPUT' || event.target?.tagName === 'TEXTAREA') return
+        const ordered = [...graph.nodes].sort((a, b) => a.y - b.y || a.x - b.x)
+        if (ordered.length === 0) return
+        const index = ordered.findIndex((entry) => entry.id === selectedId)
+        const move = (next) => {
+          event.preventDefault()
+          const target = ordered[Math.max(0, Math.min(ordered.length - 1, next))]
+          if (target !== undefined && typeof onFocus === 'function') onFocus(target.id)
+        }
+        if (event.key === 'ArrowDown' || event.key === 'ArrowRight') return move(index + 1)
+        if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') return move(index - 1)
+        if (event.key === 'Home') return move(0)
+        if (event.key === 'End') return move(ordered.length - 1)
+        if (event.key === '+' || event.key === '=') {
+          event.preventDefault()
+          zoomBy(1.15)
+          return
+        }
+        if (event.key === '-') {
+          event.preventDefault()
+          zoomBy(1 / 1.15)
+          return
+        }
+        if (event.key === 'f') {
+          event.preventDefault()
+          fit()
+          return
+        }
+        if (event.key === 'Enter' || event.key === ' ') {
+          const entry = graph.byId.get(selectedId)
+          if (entry === undefined) return
+          event.preventDefault()
+          onOpen(entry)
+          return
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          if (typeof onEscape === 'function') onEscape()
+        }
+      }
+
       function onPointerDown(event) {
+        pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+        if (pointers.current.size >= 2) {
+          pan.current = null
+          pinch.current = 0
+          setDragging(false)
+          return
+        }
         if (event.button !== 0) return
         if (event.target?.closest?.('.ct-node') !== null && event.target?.closest?.('.ct-node') !== undefined) return
         if (event.target?.closest?.('.ct-zoom') !== null && event.target?.closest?.('.ct-zoom') !== undefined) return
@@ -1492,6 +1770,20 @@ window.__ModuleLoader__.load({
       }
 
       function onPointerMove(event) {
+        if (pointers.current.has(event.pointerId)) {
+          pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+        }
+        // Two fingers pinch: scale around their midpoint and ignore panning.
+        if (pointers.current.size >= 2) {
+          const [first, second] = [...pointers.current.values()]
+          const distance = Math.hypot(first.x - second.x, first.y - second.y)
+          const previous = pinch.current
+          pinch.current = distance
+          if (previous > 0 && distance > 0) {
+            zoomAt((first.x + second.x) / 2, (first.y + second.y) / 2, distance / previous)
+          }
+          return
+        }
         const current = pan.current
         if (current === null) return
         setView({
@@ -1502,7 +1794,9 @@ window.__ModuleLoader__.load({
         touched.current = true
       }
 
-      function endPan() {
+      function endPan(event) {
+        pointers.current.delete(event?.pointerId)
+        if (pointers.current.size < 2) pinch.current = 0
         if (pan.current === null) return
         pan.current = null
         setDragging(false)
@@ -1515,7 +1809,10 @@ window.__ModuleLoader__.load({
         ref: viewportRef,
         'data-dragging': dragging ? 'true' : 'false',
         role: 'group',
+        tabIndex: 0,
         'aria-label': t('graph.label'),
+        'aria-description': t('graph.hint'),
+        onKeyDown,
         onPointerDown,
         onPointerMove,
         onPointerUp: endPan,
@@ -1547,6 +1844,7 @@ window.__ModuleLoader__.load({
             selected: entry.id === selectedId,
             onSelect,
             onOpen,
+            onToggleCollapse: typeof onToggleCollapse === 'function' ? onToggleCollapse : () => {},
           })),
           graph.nodes.length === 1
             ? h('div', {
@@ -1581,7 +1879,7 @@ window.__ModuleLoader__.load({
           }, h(IconFit, { size: 14 }))))
     }
 
-    function GraphNode({ entry, selected, onSelect, onOpen }) {
+    function GraphNode({ entry, selected, onSelect, onOpen, onToggleCollapse }) {
       const status = statusOf(entry)
       const meta = []
       if (entry.node.turn !== null && entry.node.turn !== undefined) {
@@ -1591,17 +1889,29 @@ window.__ModuleLoader__.load({
       }
       if (entry.archived) meta.push(t('node.archived'))
       else if (entry.pending) meta.push(t('node.pending'))
+      if (entry.collapsed && entry.hiddenCount > 0) meta.push(t('node.hiddenCount', { count: entry.hiddenCount }))
       if (entry.usage !== null) meta.push(t('node.tokenShort', { count: formatCompact(entry.usage.total) }))
       const label = meta.length === 0 ? entry.title : `${entry.title} · ${meta.join(' · ')}`
-      return h('button', {
-        type: 'button',
-        className: `ct-node${selected ? ' ct-node-selected' : ''}${entry.current ? ' ct-node-current' : ''}${entry.archived ? ' ct-node-archived' : ''}${entry.pending ? ' ct-node-pending' : ''}${entry.parentId === null ? ' ct-node-root' : ''}`,
+      const className = [
+        'ct-node',
+        selected ? 'ct-node-selected' : '',
+        entry.current ? 'ct-node-current' : '',
+        entry.archived ? 'ct-node-archived' : '',
+        entry.pending ? 'ct-node-pending' : '',
+        entry.parentId === null ? 'ct-node-root' : '',
+        entry.dimmed ? 'ct-node-dimmed' : '',
+        entry.highlight ? 'ct-node-match' : '',
+      ].filter((token) => token !== '').join(' ')
+      return h('div', {
+        className,
         style: {
           left: `${entry.x}px`,
           top: `${entry.y}px`,
           width: `${entry.width}px`,
           height: `${entry.height}px`,
         },
+        role: 'button',
+        tabIndex: -1,
         onClick: () => onSelect(entry.id),
         onDoubleClick: () => onOpen(entry),
         'aria-pressed': selected,
@@ -1611,7 +1921,22 @@ window.__ModuleLoader__.load({
         h('span', { className: `ct-node-dot ct-node-dot-${status.key}`, 'aria-hidden': true }),
         h('span', { className: 'ct-node-copy' },
           h('span', { className: 'ct-node-title' }, entry.displayTitle),
-          h('span', { className: 'ct-node-meta' }, meta.join(' · '))))
+          h('span', { className: 'ct-node-meta' }, meta.join(' · '))),
+        entry.hasChildren
+          ? h('span', {
+            className: `ct-node-toggle${entry.collapsed ? ' ct-node-toggle-closed' : ''}`,
+            role: 'button',
+            tabIndex: -1,
+            title: entry.collapsed ? t('node.expand') : t('node.collapse'),
+            'aria-label': entry.collapsed ? t('node.expand') : t('node.collapse'),
+            'aria-expanded': !entry.collapsed,
+            onClick: (event) => {
+              event.stopPropagation()
+              onToggleCollapse(entry.id)
+            },
+            onDoubleClick: (event) => event.stopPropagation(),
+          }, h(IconChevron, { size: 12 }))
+          : null)
     }
 
     function NodeInspector({ entry, graph, onSelect, onOpen, onBring, onArchive, onDelete, onUnarchive, useSessionAccess }) {
@@ -1703,7 +2028,7 @@ window.__ModuleLoader__.load({
             h('div', { className: 'ct-section-label' }, t('inspector.usage')),
             h('div', { className: 'ct-usage-total' },
               h('span', { className: 'ct-usage-number' }, usage === null ? t('inspector.noUsage') : formatCompact(usage.total)),
-              usage === null ? null : h('span', { className: 'ct-usage-unit' }, 'tokens'),
+              usage === null ? null : h('span', { className: 'ct-usage-unit' }, t('inspector.tokens')),
               usage !== null && usage.cacheHit !== null
                 ? h('span', { className: 'ct-cache' }, t('inspector.cacheHit', { percent: usage.cacheHit }))
                 : null),
@@ -1768,6 +2093,8 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: 'ct-text-btn ct-text-danger',
               onClick: () => onDelete(entry.id),
+              disabled: entry.pending,
+              title: entry.pending ? t('node.pending') : undefined,
             }, t('node.action.delete'))))
     }
 
@@ -1934,7 +2261,7 @@ window.__ModuleLoader__.load({
               className: 'ct-dialog-close',
               onClick: onClose,
               disabled: busy,
-              'aria-label': 'Close',
+              'aria-label': t('dialog.close'),
             }, h(IconClose, { size: 17 }))),
           h('div', { className: 'ct-dialog-body' }, children),
           footer ? h('div', { className: 'ct-dialog-foot' }, footer) : null))
@@ -1943,6 +2270,9 @@ window.__ModuleLoader__.load({
     function TargetDialog({ dialog, sessions, archived }) {
       const state = useStore()
       const [targetId, setTargetId] = React.useState('')
+      const [phase, setPhase] = React.useState('pick')
+      const [summary, setSummary] = React.useState('')
+      const [truncated, setTruncated] = React.useState(false)
       const [busy, setBusy] = React.useState(false)
       const [error, setError] = React.useState('')
       const tree = state.trees[dialog.sessionId]
@@ -1955,6 +2285,7 @@ window.__ModuleLoader__.load({
       const sourceNode = tree?.nodes?.find((node) => node.id === dialog.sourceId)
       const sourceTitle = sourceNode !== undefined ? titleOfNode(sessions, sourceNode) : t('target.source')
       const candidates = tree === undefined ? [] : targetNodes(tree, dialog.sourceId, archived)
+      const targetTitle = targetId === '' ? '' : titleOfNode(sessions, { id: targetId, title: '' })
 
       React.useEffect(() => {
         if (tree === undefined) return
@@ -1964,7 +2295,7 @@ window.__ModuleLoader__.load({
         })
       }, [dialog.id, tree?.fetchedAt])
 
-      async function submit() {
+      async function generate() {
         if (busy || targetId === '') return
         setBusy(true)
         setError('')
@@ -1973,18 +2304,37 @@ window.__ModuleLoader__.load({
             method: 'POST',
             body: JSON.stringify({ sessionId: dialog.sourceId }),
           })
-          const summary = typeof summaryBody?.summary === 'string' ? summaryBody.summary : ''
-          if (summary === '') throw new Error(t('error.summary-empty'))
+          const text = typeof summaryBody?.summary === 'string' ? summaryBody.summary : ''
+          if (text === '') throw new Error(t('error.summary-empty'))
+          setSummary(text)
+          setTruncated(summaryBody?.truncated === true)
+          setPhase('preview')
+        } catch (failure) {
+          setError(friendlyError(failure))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      async function send() {
+        if (busy || targetId === '') return
+        const text = summary.trim()
+        if (text === '') {
+          setError(t('error.summary-empty'))
+          return
+        }
+        setBusy(true)
+        setError('')
+        try {
           const remote = app?.remote?.session
           if (remote === undefined || typeof remote.prompt !== 'function') throw new Error(t('error.network'))
-          const targetTitle = titleOfNode(sessions, { id: targetId, title: '' })
           const reply = await remote.prompt({
             requestId: uuid(),
             sessionId: targetId,
             mode: 'queue',
             content: [{
               type: 'text',
-              text: `【对话树摘要 · 来自「${sourceTitle}」】\n\n${summary}`,
+              text: `【对话树摘要 · 来自「${sourceTitle}」】\n\n${text}`,
             }],
           }, new AbortController().signal)
           if (reply === undefined || reply === null || reply.ok !== true) {
@@ -1993,25 +2343,37 @@ window.__ModuleLoader__.load({
             throw new Error(`${t('error.prompt-rejected')}${detail}`)
           }
           store.closeDialog()
-          store.toast('success', t('notice.brought', { target: targetTitle, chars: summary.length }))
+          store.toast('success', t('notice.brought', { target: targetTitle, chars: text.length }))
         } catch (failure) {
+          // The edited brief stays in the textarea, so a retry does not pay for
+          // another compression call.
           setError(friendlyError(failure))
         } finally {
           setBusy(false)
         }
       }
 
+      const previewing = phase === 'preview'
       return h(DialogShell, {
-        title: t('target.title'),
-        subtitle: t('target.subtitle', { source: sourceTitle }),
+        title: previewing ? t('target.preview') : t('target.title'),
+        subtitle: previewing
+          ? t('target.previewHint')
+          : t('target.subtitle', { source: sourceTitle }),
         onClose: () => { if (!busy) store.closeDialog() },
         busy,
-        wide: false,
-        footer: h(React.Fragment, null,
-          h(ActionButton, { onClick: () => { if (!busy) store.closeDialog() }, disabled: busy }, t('target.cancel')),
-          h(ActionButton, { tone: 'primary', onClick: submit, disabled: busy || targetId === '' },
-            busy ? h(Spinner, { size: 13 }) : h(IconBring, { size: 14 }),
-            h('span', null, busy ? t('target.working') : t('target.confirm')))),
+        wide: previewing,
+        footer: previewing
+          ? h(React.Fragment, null,
+            h(ActionButton, { onClick: () => { if (!busy) setPhase('pick') }, disabled: busy }, t('target.back')),
+            h(ActionButton, { onClick: generate, disabled: busy }, t('target.regenerate')),
+            h(ActionButton, { tone: 'primary', onClick: send, disabled: busy || summary.trim() === '' },
+              busy ? h(Spinner, { size: 13 }) : h(IconBring, { size: 14 }),
+              h('span', null, busy ? t('target.working') : t('target.send'))))
+          : h(React.Fragment, null,
+            h(ActionButton, { onClick: () => { if (!busy) store.closeDialog() }, disabled: busy }, t('target.cancel')),
+            h(ActionButton, { tone: 'primary', onClick: generate, disabled: busy || targetId === '' },
+              busy ? h(Spinner, { size: 13 }) : h(IconBring, { size: 14 }),
+              h('span', null, busy ? t('target.working') : t('target.confirm')))),
       },
         h('div', { className: 'ct-source-card' },
           h('span', { className: 'ct-source-label' }, t('target.source')),
@@ -2019,38 +2381,53 @@ window.__ModuleLoader__.load({
           sourceNode?.turn !== null && sourceNode?.turn !== undefined
             ? h('span', { className: 'ct-source-meta' }, t('inspector.turn', { turn: sourceNode.turn }))
             : null),
-        error !== '' ? h('div', { className: 'ct-inline-error' }, h(IconAlert, { size: 15 }), h('span', null, error)) : null,
-        h('div', { className: 'ct-target-label' }, t('target.choose')),
-        loading
-          ? h('div', { className: 'ct-target-loading' }, h(Spinner, { size: 16 }), h('span', null, t('head.loading')))
-          : candidates.length === 0
-            ? h('div', { className: 'ct-target-empty' }, t('target.empty'))
-            : h('div', { className: 'ct-target-list', role: 'radiogroup', 'aria-label': t('target.choose') },
-              candidates.map((node) => {
-                const selected = node.id === targetId
-                const session = sessionOf(sessions, node.id)
-                const title = titleOfNode(sessions, node)
-                const depth = depthOf(tree, node.id)
-                return h('button', {
-                  key: node.id,
-                  type: 'button',
-                  className: `ct-target-item${selected ? ' ct-target-item-selected' : ''}`,
-                  role: 'radio',
-                  'aria-checked': selected,
-                  onClick: () => setTargetId(node.id),
-                  style: { paddingLeft: 12 + Math.min(depth, 8) * 18 },
-                },
-                  h('span', { className: 'ct-radio' }, selected ? h('span', { className: 'ct-radio-dot' }) : null),
-                  h('span', { className: 'ct-target-glyph' }, node.id === tree?.rootId ? h(IconTree, { size: 15 }) : h(IconBranch, { size: 14 })),
-                  h('span', { className: 'ct-target-copy' },
-                    h('span', { className: 'ct-target-title' }, title),
-                    h('span', { className: 'ct-target-meta' },
-                      node.parentId === null || node.parentId === undefined
-                        ? t('root.badge')
-                        : t('inspector.turn', { turn: node.turn ?? 0 }),
-                      session?.running ? ` · ${t('node.running')}` : '')),
-                  selected ? h('span', { className: 'ct-target-check' }, h(IconCheck, { size: 15 })) : null)
-              })))
+        previewing
+          ? h('div', { className: 'ct-preview' },
+            h('div', { className: 'ct-target-label' }, t('target.choose') + ' · ' + targetTitle),
+            truncated ? h('div', { className: 'ct-inline-warn' }, h(IconAlert, { size: 15 }), h('span', null, t('target.truncated'))) : null,
+            h('textarea', {
+              className: 'ct-preview-text',
+              value: summary,
+              rows: 12,
+              'aria-label': t('target.preview'),
+              onChange: (event) => setSummary(event.target.value),
+            }))
+          : h(React.Fragment, null,
+            error !== '' ? h('div', { className: 'ct-inline-error' }, h(IconAlert, { size: 15 }), h('span', null, error)) : null,
+            h('div', { className: 'ct-target-label' }, t('target.choose')),
+            loading
+              ? h('div', { className: 'ct-target-loading' }, h(Spinner, { size: 16 }), h('span', null, t('head.loading')))
+              : candidates.length === 0
+                ? h('div', { className: 'ct-target-empty' }, t('target.empty'))
+                : h('div', { className: 'ct-target-list', role: 'radiogroup', 'aria-label': t('target.choose') },
+                  candidates.map((node) => {
+                    const selected = node.id === targetId
+                    const session = sessionOf(sessions, node.id)
+                    const title = titleOfNode(sessions, node)
+                    const depth = depthOf(tree, node.id)
+                    return h('button', {
+                      key: node.id,
+                      type: 'button',
+                      className: `ct-target-item${selected ? ' ct-target-item-selected' : ''}`,
+                      role: 'radio',
+                      'aria-checked': selected,
+                      onClick: () => setTargetId(node.id),
+                      style: { paddingLeft: 12 + Math.min(depth, 8) * 18 },
+                    },
+                      h('span', { className: 'ct-radio' }, selected ? h('span', { className: 'ct-radio-dot' }) : null),
+                      h('span', { className: 'ct-target-glyph' }, node.id === tree?.rootId ? h(IconTree, { size: 15 }) : h(IconBranch, { size: 14 })),
+                      h('span', { className: 'ct-target-copy' },
+                        h('span', { className: 'ct-target-title' }, title),
+                        h('span', { className: 'ct-target-meta' },
+                          node.parentId === null || node.parentId === undefined
+                            ? t('root.badge')
+                            : t('inspector.turn', { turn: node.turn ?? 0 }),
+                          session?.running ? ` · ${t('node.running')}` : '')),
+                      selected ? h('span', { className: 'ct-target-check' }, h(IconCheck, { size: 15 })) : null)
+                  }))),
+        previewing && error !== ''
+          ? h('div', { className: 'ct-inline-error' }, h(IconAlert, { size: 15 }), h('span', null, error))
+          : null)
     }
 
     function depthOf(tree, nodeId) {
@@ -2077,6 +2454,8 @@ window.__ModuleLoader__.load({
       const node = tree?.nodes?.find((candidate) => candidate.id === dialog.nodeId)
       const subtree = tree === undefined ? [] : subtreeOf(tree, dialog.nodeId)
       const isDelete = dialog.action === 'delete'
+      const targetSession = sessionOf(sessions, dialog.nodeId)
+      const running = !isDelete && targetSession?.running === true
       const title = node !== undefined ? titleOfNode(sessions, node) : t('head.titleFallback')
       const childCount = Math.max(0, subtree.length - 1)
 
@@ -2114,6 +2493,9 @@ window.__ModuleLoader__.load({
       },
         childCount > 0
           ? h('div', { className: 'ct-warning' }, h(IconAlert, { size: 16 }), h('span', null, t('confirm.children', { count: childCount, total: subtree.length })))
+          : null,
+        running
+          ? h('div', { className: 'ct-warning' }, h(IconAlert, { size: 16 }), h('span', null, t('confirm.archive.running')))
           : null,
         error !== '' ? h('div', { className: 'ct-inline-error' }, h(IconAlert, { size: 15 }), h('span', null, error)) : null,
         h('div', { className: 'ct-target-label' }, t('confirm.list')),
@@ -2181,7 +2563,33 @@ window.__ModuleLoader__.load({
       .ct-top-notice .ct-spinner { width: 12px; height: 12px; }
       .ct-top-notice-success { color: var(--dsw-alias-state-success-primary); }
       .ct-top-notice-error { color: var(--dsw-alias-state-error-primary); }
-      .ct-top-actions { flex: none; display: flex; align-items: center; gap: 2px; }
+      .ct-top-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+      .ct-search {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 8px;
+        border: 1px solid var(--dsw-alias-border-l1);
+        border-radius: 7px;
+        color: var(--dsw-alias-label-secondary);
+        background: var(--dsw-alias-bg-layer-1);
+      }
+      .ct-search:focus-within { border-color: var(--dsw-alias-border-l2); }
+      .ct-search-input {
+        width: 132px;
+        min-width: 0;
+        border: 0;
+        outline: 0;
+        padding: 0;
+        background: transparent;
+        color: var(--dsw-alias-label-primary);
+        font: inherit;
+        font-size: 13px;
+      }
+      .ct-search-input::placeholder { color: var(--dsw-alias-label-secondary); }
+      .ct-search-input::-webkit-search-cancel-button { display: none; }
+      .ct-search-count { font-size: 11px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
       .ct-icon-btn {
         width: 28px;
         height: 28px;
@@ -2220,6 +2628,7 @@ window.__ModuleLoader__.load({
         background: var(--dsw-alias-bg-base);
       }
       .ct-canvas[data-dragging="true"] { cursor: grabbing; }
+      .ct-canvas:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: -2px; }
       .ct-stage {
         position: absolute;
         left: 0;
@@ -2239,7 +2648,7 @@ window.__ModuleLoader__.load({
         position: absolute;
         width: 176px;
         height: 58px;
-        padding: 0 12px;
+        padding: 0 6px 0 12px;
         display: flex;
         align-items: center;
         gap: 9px;
@@ -2269,7 +2678,22 @@ window.__ModuleLoader__.load({
       .ct-node-dot-running { background: var(--dsw-alias-state-success-primary); }
       .ct-node-dot-pending { background: var(--dsw-alias-state-warn-primary); }
       .ct-node-dot-archived { background: var(--dsw-alias-label-secondary); }
-      .ct-node-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+      .ct-node-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+      .ct-node-dimmed { opacity: .34; }
+      .ct-node-match { border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 45%, var(--dsw-alias-border-l1)); }
+      .ct-node-toggle {
+        flex: none;
+        width: 18px;
+        height: 18px;
+        display: grid;
+        place-items: center;
+        border-radius: 4px;
+        color: var(--dsw-alias-label-secondary);
+        cursor: pointer;
+      }
+      .ct-node-toggle:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+      .ct-node-toggle > svg { transform: rotate(90deg); transition: transform .12s ease; }
+      .ct-node-toggle-closed > svg { transform: rotate(0deg); }
       .ct-node-title {
         font-size: 14px;
         line-height: 1.3;
@@ -2793,6 +3217,34 @@ window.__ModuleLoader__.load({
         font-size: 12px;
         line-height: 1.5;
       }
+      .ct-inline-warn {
+        display: flex;
+        align-items: flex-start;
+        gap: 7px;
+        margin: 0 0 8px;
+        padding: 7px 10px;
+        border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 30%, transparent);
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 7%, transparent);
+        color: var(--dsw-alias-state-warn-primary);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .ct-preview { display: flex; flex-direction: column; gap: 8px; }
+      .ct-preview-text {
+        width: 100%;
+        min-height: 220px;
+        resize: vertical;
+        padding: 10px 12px;
+        border: 1px solid var(--dsw-alias-border-l1);
+        border-radius: 8px;
+        background: var(--dsw-alias-bg-layer-1);
+        color: var(--dsw-alias-label-primary);
+        font: inherit;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .ct-preview-text:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: -1px; }
       .ct-confirm-list { display: flex; flex-direction: column; }
       .ct-confirm-item {
         min-height: 34px;

@@ -1,6 +1,6 @@
 {
   "name": "dsh-conversation-tree",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "A zoomable conversation-tree management view with branch lineage, own token usage, model, bring-back, archive, and subtree deletion.",
