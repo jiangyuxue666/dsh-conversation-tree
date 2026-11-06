@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Conversation tree">
+  <defs>
+    <linearGradient id="ct-bg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#10283b"/>
+      <stop offset="1" stop-color="#0b1623"/>
+    </linearGradient>
+    <linearGradient id="ct-line" x1="18" y1="14" x2="47" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9df3d4"/>
+      <stop offset="1" stop-color="#5cc6b0"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#ct-bg)"/>
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="15.25" fill="none" stroke="#ffffff" stroke-opacity=".10" stroke-width="1.5"/>
+  <path d="M32 15.5v11.25c0 2.35-1.9 4.25-4.25 4.25H21.5c-2.35 0-4.25 1.9-4.25 4.25v6.25" fill="none" stroke="url(#ct-line)" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M32 26.75h10.5c2.35 0 4.25 1.9 4.25 4.25v9.75" fill="none" stroke="url(#ct-line)" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M32 26.75v14.5" fill="none" stroke="url(#ct-line)" stroke-width="2.6" stroke-linecap="round"/>
+  <circle cx="32" cy="15.5" r="5.25" fill="#f7f3e8"/>
+  <circle cx="17.25" cy="15.5" r="3.1" fill="#4f8dff"/>
+  <circle cx="17.25" cy="41.5" r="4.4" fill="#f7f3e8"/>
+  <circle cx="46.75" cy="40.75" r="4.4" fill="#f7f3e8"/>
+  <circle cx="32" cy="41.25" r="3.35" fill="#9df3d4"/>
+  <circle cx="32" cy="15.5" r="2.1" fill="#10283b"/>
+  <circle cx="17.25" cy="41.5" r="1.7" fill="#10283b"/>
+  <circle cx="46.75" cy="40.75" r="1.7" fill="#10283b"/>
+  <path d="M14.5 20.5l5.5 21" fill="none" stroke="#4f8dff" stroke-width="1.4" stroke-linecap="round" stroke-opacity=".55"/>
+</svg>

@@ -1,0 +1,1597 @@
+/**
+ * dsh-conversation-tree — host half.
+ *
+ * A tree branch is an ordinary DSH session forked from one completed turn of
+ * its parent. The parent link is written into the immutable session header and
+ * into a small durable edge registry, because the native ordinary fork does
+ * not record its source. Branch sessions are created and owned by this plugin,
+ * so a subtree can be stopped and deleted without touching unrelated sessions.
+ *
+ * Authenticated routes under Connection's fence:
+ *  - branch: create a child session at one completed-turn boundary;
+ *  - tree: resolve the connected branch tree around one session, optionally
+ *    with each Session's own token/Turn totals after its inherited prefix;
+ *  - summarize: compress a source conversation's own turns for bring-back;
+ *  - delete: stop and remove one branch subtree after explicit confirmation.
+ *
+ * @module dsh-conversation-tree
+ */
+
+import { createHash, randomUUID } from 'node:crypto'
+import { readFile, open, mkdir, rename, unlink, rmdir, lstat, readdir } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, dirname, join, isAbsolute, parse, resolve } from 'node:path'
+
+/** Route: create a branch at one completed turn. */
+const BRANCH_ROUTE = '/api/conversation-tree/branch'
+/** Route: resolve the branch tree around one session. */
+const TREE_ROUTE = '/api/conversation-tree/tree'
+/** Route: compress one conversation for bring-back. */
+const SUMMARY_ROUTE = '/api/conversation-tree/summarize'
+/** Route: delete one branch subtree. */
+const DELETE_ROUTE = '/api/conversation-tree/delete'
+
+/** Registry of branch edges, durable across host restarts. */
+const TREE_FILE = join(harnessHome(), 'conversation-tree.json')
+/** Never break a possibly live lock: a crash may require manual recovery. */
+const TREE_LOCK = `${TREE_FILE}.lock`
+
+/** Transcript characters carried into one compression call. */
+const MAX_CONTEXT_CHARS = 140_000
+/** Maximum branch title characters. */
+const MAX_TITLE_CHARS = 80
+
+/**
+ * Platforms whose session directory and write-lock semantics are verified.
+ * macOS takes a POSIX `flock` on `session.lock`; Windows excludes writers with
+ * a named kernel semaphore derived from the same path and creates no lock file.
+ */
+const SUPPORTED_DELETE_PLATFORMS = new Set(['darwin', 'win32'])
+
+/**
+ * Live branch handles, keyed by session id.
+ *
+ * Kept on globalThis rather than module scope: Cordis can reload this module
+ * for a profile without recreating the process, and a module-local map would
+ * silently lose the only capability that can dispose a live branch. The
+ * global map survives that reload; a process restart also drops the agents,
+ * so a stale entry can be discarded by the normal liveness checks.
+ */
+const HANDLE_STORE = Symbol.for('dsh-conversation-tree.handles')
+const disposeFailures = globalThis[Symbol.for('dsh-conversation-tree.dispose-failures')]
+  ?? (globalThis[Symbol.for('dsh-conversation-tree.dispose-failures')] = new Map())
+const handles = globalThis[HANDLE_STORE] ?? (globalThis[HANDLE_STORE] = new Map())
+
+/** Compression instructions for a bring-back brief. */
+const COMPRESS_SYSTEM = [
+  '你是对话整理器。用户把一条对话分支中的讨论带回另一条对话；',
+  '现在要把这条分支自己的内容压缩成一段可以直接放进目标对话的摘要。',
+  '',
+  '规则：',
+  '1. 第一句给出结论。',
+  '2. 然后用 3-6 条要点写清楚：结论与决定、改动过的文件或命令、验证结果、未完成事项、风险或待确认。',
+  '3. 只写记录里出现过的事实；记录没提到的不写，不确定的标注「未确认」。',
+  '4. 删掉寒暄、重复、试错过程和心理活动。',
+  '5. 总长不超过 400 字，使用与记录相同的语言。',
+  '6. 直接输出摘要正文，不要加「以下是摘要」这类开场白。',
+].join('\n')
+
+export const inject = ['llm', 'sessions', 'connection', 'agents', 'sessionProjections']
+
+/**
+ * Register the four authenticated routes.
+ * @param ctx - the plugin context.
+ */
+export function apply(ctx) {
+  ctx.effect(
+    () => ctx.connection.fetch.register({
+      path: BRANCH_ROUTE,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: (request) => createBranch(ctx, request),
+    }),
+    'conversation-tree: branch',
+  )
+  ctx.effect(
+    () => ctx.connection.fetch.register({
+      path: TREE_ROUTE,
+      methods: ['GET'],
+      requestBody: 'buffered',
+      fetch: (request) => readTree(ctx, request),
+    }),
+    'conversation-tree: tree',
+  )
+  ctx.effect(
+    () => ctx.connection.fetch.register({
+      path: SUMMARY_ROUTE,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: (request) => summarize(ctx, request),
+    }),
+    'conversation-tree: summarize',
+  )
+  ctx.effect(
+    () => ctx.connection.fetch.register({
+      path: DELETE_ROUTE,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: (request) => deleteSubtree(ctx, request),
+    }),
+    'conversation-tree: delete',
+  )
+  // Repair ghost workspace/archive entries left by earlier deletions. This is
+  // intentionally fire-and-forget: a storage fault must not stop the routes
+  // from registering.
+  void reconcileWorkspaceRegistry(ctx).catch(() => {})
+}
+
+/** The Harness home: an absolute `DSH_HOME`, else `~/.dsh`. */
+function harnessHome() {
+  const configured = process.env.DSH_HOME
+  if (typeof configured === 'string' && configured !== '' && isAbsolute(configured)) return configured
+  return join(homedir(), '.dsh')
+}
+
+// ------------------------------------------------------------------ registry
+
+/** An empty durable registry. */
+function emptyRegistry() {
+  return { version: 1, edges: [], pending: [] }
+}
+
+/** A shallow copy safe to hand to an operation. */
+function cloneRegistry(known) {
+  return {
+    version: 1,
+    edges: known.edges.map((edge) => ({ ...edge })),
+    pending: known.pending.map((edge) => ({ ...edge })),
+  }
+}
+
+/** Validate one edge record. */
+function validEdge(edge) {
+  return edge !== null && typeof edge === 'object' && !Array.isArray(edge)
+    && typeof edge.childId === 'string' && edge.childId !== ''
+    && typeof edge.parentId === 'string' && edge.parentId !== ''
+    && edge.childId !== edge.parentId
+    && Number.isSafeInteger(edge.atSeq) && edge.atSeq >= 0
+    && Number.isSafeInteger(edge.turn) && edge.turn >= 1
+    && typeof edge.snippet === 'string'
+    && typeof edge.title === 'string'
+    && Number.isFinite(edge.createdAt)
+}
+
+/** Read the registry, treating a missing file as empty. */
+async function treeRegistry() {
+  let raw
+  try {
+    raw = await readFile(TREE_FILE, 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return emptyRegistry()
+    throw error
+  }
+  const parsed = JSON.parse(raw)
+  if (parsed === null || typeof parsed !== 'object' || parsed.version !== 1
+    || !Array.isArray(parsed.edges) || !Array.isArray(parsed.pending)) {
+    throw new Error('invalid conversation-tree registry')
+  }
+  const edges = parsed.edges.map((edge) => ({ ...edge }))
+  const pending = parsed.pending.map((edge) => ({ ...edge }))
+  if (edges.some((edge) => !validEdge(edge)) || pending.some((edge) => !validEdge(edge))) {
+    throw new Error('invalid conversation-tree edge')
+  }
+  const childIds = [...edges, ...pending].map((edge) => edge.childId)
+  if (new Set(childIds).size !== childIds.length) throw new Error('duplicate conversation-tree child')
+  return { version: 1, edges, pending }
+}
+
+/** Atomic replacement under the cross-process lock; never swallow failure. */
+async function saveTreeRegistry(known) {
+  const temporary = `${TREE_FILE}.${randomUUID()}.tmp`
+  try {
+    const file = await open(temporary, 'wx', 0o600)
+    try {
+      await file.writeFile(JSON.stringify({
+        version: 1,
+        edges: known.edges,
+        pending: known.pending,
+      }), 'utf8')
+      await file.sync()
+    } finally {
+      await file.close()
+    }
+    await rename(temporary, TREE_FILE)
+    if (process.platform !== 'win32') {
+      const directory = await open(dirname(TREE_FILE), 'r')
+      try { await directory.sync() } finally { await directory.close() }
+    }
+  } finally {
+    await unlink(temporary).catch((error) => { if (error?.code !== 'ENOENT') throw error })
+  }
+}
+
+/** Serialize all cooperating processes; never steal a possibly live lock. */
+async function withTree(operation) {
+  await mkdir(dirname(TREE_FILE), { recursive: true })
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await mkdir(TREE_LOCK, { mode: 0o700 })
+      break
+    } catch (error) {
+      if (error?.code !== 'EEXIST' || attempt >= 79) throw error
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25))
+    }
+  }
+  try {
+    return await operation(await treeRegistry())
+  } finally {
+    await rmdir(TREE_LOCK)
+  }
+}
+
+// --------------------------------------------------------------------- tree
+
+/**
+ * Resolve the connected tree around one session.
+ * The current session may be any node; its parent chain names the root.
+ * @param known - registry snapshot.
+ * @param sessionId - current session id.
+ * @returns payload with root, current, and ordered nodes.
+ */
+function buildTree(known, sessionId) {
+  const all = [
+    ...known.edges.map((edge) => ({ ...edge, pending: false })),
+    ...known.pending.map((edge) => ({ ...edge, pending: true })),
+  ]
+  const byChild = new Map(all.map((edge) => [edge.childId, edge]))
+  let rootId = sessionId
+  const seen = new Set([sessionId])
+  for (;;) {
+    const edge = byChild.get(rootId)
+    if (edge === undefined) break
+    if (seen.has(edge.parentId)) throw new Error('conversation-tree-cycle')
+    seen.add(edge.parentId)
+    rootId = edge.parentId
+  }
+
+  const children = new Map()
+  for (const edge of all) {
+    const list = children.get(edge.parentId)
+    if (list === undefined) children.set(edge.parentId, [edge])
+    else list.push(edge)
+  }
+  for (const list of children.values()) {
+    list.sort((a, b) => a.createdAt - b.createdAt || a.childId.localeCompare(b.childId))
+  }
+
+  const nodes = [{
+    id: rootId,
+    parentId: null,
+    atSeq: null,
+    turn: null,
+    snippet: '',
+    title: '',
+    createdAt: null,
+    pending: false,
+    depth: 0,
+    childCount: 0,
+  }]
+  const queue = [rootId]
+  const visited = new Set([rootId])
+  while (queue.length > 0) {
+    const parentId = queue.shift()
+    const list = children.get(parentId) ?? []
+    const root = nodes.find((node) => node.id === parentId)
+    if (root !== undefined) root.childCount = list.length
+    for (const edge of list) {
+      if (visited.has(edge.childId)) throw new Error('conversation-tree-cycle')
+      visited.add(edge.childId)
+      const parent = nodes.find((node) => node.id === parentId)
+      nodes.push({
+        id: edge.childId,
+        parentId: edge.parentId,
+        atSeq: edge.atSeq,
+        turn: edge.turn,
+        snippet: edge.snippet,
+        title: edge.title,
+        createdAt: edge.createdAt,
+        pending: edge.pending,
+        depth: (parent?.depth ?? 0) + 1,
+        childCount: 0,
+      })
+      queue.push(edge.childId)
+    }
+  }
+  return {
+    version: 1,
+    rootId,
+    currentId: sessionId,
+    branchCount: nodes.length - 1,
+    nodes,
+  }
+}
+
+/** GET /api/conversation-tree/tree?sessionId=... */
+async function readTree(ctx, request) {
+  const url = new URL(request.url)
+  const sessionId = url.searchParams.get('sessionId')?.trim() ?? ''
+  const includeStats = url.searchParams.get('stats') === '1'
+  if (sessionId === '') return failure(400, 'missing-fields')
+  try {
+    const payload = await withTree(async (known) => {
+      await promotePending(ctx, known).catch(() => {})
+      return buildTree(known, sessionId)
+    })
+    if (includeStats) await augmentLiveStats(ctx, payload)
+    return json(payload)
+  } catch (error) {
+    return failure(409, `tree-failed:${errorMessage(error)}`)
+  }
+}
+
+/** Add each Session's own usage and Turn counts, reading cold logs when needed. */
+async function augmentLiveStats(ctx, payload) {
+  if (payload === null || typeof payload !== 'object' || !Array.isArray(payload.nodes)) return
+  let persistence
+  try {
+    persistence = ctx.get('sessionPersistence')
+  } catch {
+    persistence = undefined
+  }
+  for (const node of payload.nodes) {
+    if (node === null || typeof node !== 'object') continue
+    let events
+    let inherited = 0
+    try {
+      const session = ctx.sessions.get(node.id)
+      if (session !== undefined) {
+        events = session.snapshotEvents()
+        inherited = Number.isSafeInteger(session.inheritedEventCount) && session.inheritedEventCount >= 0
+          ? session.inheritedEventCount
+          : 0
+      } else if (persistence !== undefined && typeof persistence.open === 'function') {
+        const handle = await persistence.open(node.id, 'read')
+        try {
+          const result = await handle.read()
+          events = result.events
+          inherited = Number.isSafeInteger(handle.inheritedEventCount) && handle.inheritedEventCount >= 0
+            ? handle.inheritedEventCount
+            : 0
+        } finally {
+          await handle.close().catch(() => {})
+        }
+      }
+    } catch {
+      continue
+    }
+    if (!Array.isArray(events)) continue
+    node.usage = ownUsage(events, inherited)
+    const counts = ownCounts(events, inherited)
+    node.turns = counts.turns
+    node.steps = counts.steps
+    node.statsAvailable = true
+  }
+}
+
+/** The retry slot a usage sample belongs to, if the event names one. */
+function turnStepKey(data) {
+  if (!Number.isSafeInteger(data?.turn) || !Number.isSafeInteger(data?.step)) return null
+  return `${data.turn}:${data.step}`
+}
+
+/** The last usage chunk embedded in one compact Assistant stream. */
+function lastStreamUsage(stream) {
+  if (!Array.isArray(stream)) return undefined
+  for (let index = stream.length - 1; index >= 0; index--) {
+    const record = stream[index]
+    if (record?.type === 'chunk' && record.chunk?.type === 'usage' && record.chunk.usage !== undefined) {
+      return record.chunk.usage
+    }
+  }
+  return undefined
+}
+
+/** Normalize one provider usage sample into the four disjoint billing buckets. */
+function usageBuckets(usage) {
+  const count = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
+  return {
+    uncachedInputTokens: count(usage?.inputTokens),
+    outputTokens: count(usage?.outputTokens),
+    cacheReadTokens: count(usage?.cacheReadTokens),
+    cacheWriteTokens: count(usage?.cacheWriteTokens),
+  }
+}
+
+/**
+ * Sum only the events this Session owns after its inherited fork prefix.
+ * A retried step replaces its earlier sample instead of adding to it.
+ */
+function ownUsage(events, fromSeq) {
+  const samples = new Map()
+  const start = Math.max(0, Math.min(events.length, fromSeq))
+  for (let index = start; index < events.length; index++) {
+    const event = events[index]
+    if (event?.type === 'llm/retry-started') {
+      const key = turnStepKey(event.data)
+      if (key !== null) samples.delete(key)
+      continue
+    }
+    if (event?.type !== 'assistant/message' && event?.type !== 'assistant/attempt') continue
+    const usage = event.type === 'assistant/message'
+      ? event.data?.usage
+      : lastStreamUsage(event.data?.stream)
+    if (usage === undefined || usage === null) continue
+    samples.set(turnStepKey(event.data) ?? `seq:${event.seq}`, usageBuckets(usage))
+  }
+  const totals = { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  for (const buckets of samples.values()) {
+    totals.uncachedInputTokens += buckets.uncachedInputTokens
+    totals.outputTokens += buckets.outputTokens
+    totals.cacheReadTokens += buckets.cacheReadTokens
+    totals.cacheWriteTokens += buckets.cacheWriteTokens
+  }
+  return totals
+}
+
+/** Count the Turns and Steps the Session completed after its inherited prefix. */
+function ownCounts(events, fromSeq) {
+  let turns = 0
+  let steps = 0
+  const start = Math.max(0, Math.min(events.length, fromSeq))
+  for (let index = start; index < events.length; index++) {
+    const type = events[index]?.type
+    if (type === 'turn/start') turns += 1
+    else if (type === 'step/start') steps += 1
+  }
+  return { turns, steps }
+}
+
+/** Move pending edges whose child session now exists into the durable edges. */
+async function promotePending(ctx, known) {
+  if (known.pending.length === 0) return
+  const persistence = ctx.get('sessionPersistence')
+  const promoted = []
+  for (const edge of [...known.pending]) {
+    let exists = ctx.sessions.get(edge.childId) !== undefined
+    if (!exists && persistence !== undefined) {
+      try {
+        exists = (await persistence.stat(edge.childId)) !== undefined
+      } catch {
+        exists = false
+      }
+    }
+    if (exists) promoted.push(edge)
+  }
+  if (promoted.length === 0) return
+  const ids = new Set(promoted.map((edge) => edge.childId))
+  known.pending = known.pending.filter((edge) => !ids.has(edge.childId))
+  known.edges.push(...promoted)
+  await saveTreeRegistry(known)
+}
+
+// ------------------------------------------------------------------- branch
+
+/** POST /api/conversation-tree/branch */
+async function createBranch(ctx, request) {
+  const body = await readJson(request)
+  if (body === undefined) return failure(400, 'invalid-json')
+  const parentSessionId = typeof body.parentSessionId === 'string' ? body.parentSessionId : ''
+  const atSeq = body.atSeq
+  if (parentSessionId === '' || !Number.isSafeInteger(atSeq) || atSeq < 0) {
+    return failure(400, 'missing-fields')
+  }
+
+  const parent = ctx.agents.get(parentSessionId)
+  if (parent === undefined) return failure(409, 'session-not-loaded')
+  const parentSession = parent.session
+  const header = parentSession.header
+  if (!header || typeof header !== 'object') return failure(409, 'session-header-unavailable')
+  // The persisted depth is a floor; runtime options can deepen it further.
+  const storedDepth = header?.delegationDepth ?? 0
+  const runtimeDepth = parent.options?.subagentDepth ?? 0
+  if (header?.origin !== undefined || !Number.isSafeInteger(storedDepth) || storedDepth !== 0
+    || Object.is(storedDepth, -0) || !Number.isSafeInteger(runtimeDepth) || runtimeDepth !== 0
+    || Object.is(runtimeDepth, -0)) return failure(403, 'subagent-not-supported')
+  const cwd = typeof header.cwd === 'string' ? header.cwd : ''
+  if (cwd === '' || !isAbsolute(cwd)) return failure(409, 'cwd-unavailable')
+
+  let events
+  let seed
+  let inheritedEventCount
+  let boundarySeq
+  try {
+    events = parentSession.snapshotEvents()
+    boundarySeq = resolveBranchBoundary(events, atSeq)
+    if (boundarySeq < 0) return failure(409, 'branch-boundary-invalid')
+    const inheritedPrefix = Number.isSafeInteger(parentSession.inheritedEventCount)
+      && parentSession.inheritedEventCount >= 0 ? parentSession.inheritedEventCount : 0
+    // A branch's snapshot includes its parent's prefix. Forking inside that
+    // prefix would copy an ancestor's context while recording the current
+    // branch as the parent, so the tree would show a lineage that never
+    // happened. Only the branch's own turns can be branch points.
+    if (boundarySeq < inheritedPrefix) return failure(409, 'branch-boundary-inherited')
+    if (events.some((event, index) => event.seq !== index)) throw new Error('non-contiguous snapshot')
+    const { buildForkSeed } = await import('@deepseek-ai/dsh-session/fork')
+    if (typeof buildForkSeed !== 'function') throw new Error('fork helper unavailable')
+    seed = buildForkSeed(events, boundarySeq)
+    inheritedEventCount = boundarySeq + 1
+  } catch (error) {
+    return failure(409, `context-unavailable:${errorMessage(error)}`)
+  }
+
+  const presets = ctx.get('agentPresets')
+  if (!presets || !parent.ctx || typeof presets.composeFrom !== 'function') return failure(409, 'preset-unavailable')
+  let presetId
+  try {
+    presetId = presets.composedPreset(parent.ctx)
+    if (typeof presetId !== 'string' || presetId === '') return failure(409, 'preset-unavailable')
+  } catch (error) {
+    return failure(409, `preset-unavailable:${errorMessage(error)}`)
+  }
+  const selected = currentModelSelection(ctx, parentSession)
+  const route = usableRoute(selected) ? routeOf(selected) : modelRoute(ctx, parentSession)
+  if (route === undefined) return failure(409, 'model-unavailable')
+
+  const sessionId = `session-${randomUUID()}`
+  const point = branchPoint(events, boundarySeq)
+  let siblingCount = 0
+  let edge
+  try {
+    edge = await withTree(async (known) => {
+      siblingCount = [...known.edges, ...known.pending].filter((entry) => entry.parentId === parentSessionId).length
+      const title = branchTitle(titleOfEvents(events), siblingCount + 1)
+      const record = {
+        childId: sessionId,
+        parentId: parentSessionId,
+        atSeq: boundarySeq,
+        turn: point.turn,
+        snippet: point.snippet,
+        title,
+        createdAt: Date.now(),
+      }
+      known.pending.push(record)
+      await saveTreeRegistry(known)
+      return record
+    })
+  } catch (error) {
+    return failure(503, `tree-registry-failed:${errorMessage(error)}`)
+  }
+
+  let handle
+  try {
+    handle = await ctx.agents.create({
+      sessionId,
+      ...(route === undefined ? {} : { agentOptions: route }),
+      meta: {
+        cwd,
+        parentSession: parentSessionId,
+        isSeeded: true,
+        agentPreset: presetId,
+      },
+      inheritedEventCount,
+      seed,
+      setup: async (agentCtx, agent) => {
+        const inheritedPreset = presets.composeFrom(agentCtx, parent.ctx)
+        if (inheritedPreset !== presetId) throw new Error('parent preset revision unavailable')
+        installModelRoute(ctx, agentCtx, agent, route)
+        if (route !== undefined) {
+          agent.session.append('model/selection', {
+            provider: route.provider,
+            model: route.model,
+            ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
+          })
+        }
+        agent.session.append('session/title', {
+          title: edge.title,
+          messageSeqs: [],
+          source: { kind: 'user' },
+        })
+      },
+    })
+  } catch (error) {
+    // A throwing create may still have written a session. Keep the pending
+    // edge when evidence exists; otherwise remove the empty registration.
+    let exists = ctx.sessions.get(sessionId) !== undefined
+    if (!exists) {
+      const persistence = ctx.get('sessionPersistence')
+      if (persistence === undefined) {
+        exists = true
+      } else {
+        try {
+          exists = (await persistence.stat(sessionId)) !== undefined
+        } catch {
+          exists = true
+        }
+      }
+    }
+    if (!exists) {
+      await withTree(async (known) => {
+        known.pending = known.pending.filter((entry) => entry.childId !== sessionId)
+        await saveTreeRegistry(known)
+      }).catch(() => {})
+    }
+    return new Response(JSON.stringify({
+      error: `open-failed:${errorMessage(error)}`,
+      sessionId,
+      pending: exists,
+      cleanupAvailable: false,
+    }), {
+      status: 409,
+      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    })
+  }
+
+  handles.set(sessionId, handle)
+  let verified = false
+  try {
+    const live = handle?.agent?.session?.header
+    if (live?.id !== sessionId || live?.cwd !== cwd || live?.parentSession !== parentSessionId) {
+      throw new Error('session-binding-mismatch')
+    }
+    verified = true
+  } catch {
+    verified = false
+  }
+
+  let pending = false
+  try {
+    await withTree(async (known) => {
+      const index = known.pending.findIndex((entry) => entry.childId === sessionId)
+      if (index < 0) throw new Error('pending-edge-missing')
+      const [record] = known.pending.splice(index, 1)
+      known.edges.push(record)
+      await saveTreeRegistry(known)
+    })
+  } catch {
+    pending = true
+  }
+
+  if (verified) {
+    try {
+      const registryService = ctx.get('workspaceRegistry')
+      const workspace = registryService?.list?.().find((candidate) => Array.isArray(candidate.sessionIds)
+        && candidate.sessionIds.includes(parentSessionId))
+      if (workspace !== undefined && typeof workspace.attachSession === 'function') {
+        await workspace.attachSession(sessionId)
+      }
+    } catch {
+      /* an unattached session still works; the user can move it later */
+    }
+  }
+
+  if (!verified) {
+    return new Response(JSON.stringify({
+      error: 'creation-unverified:session binding mismatch',
+      sessionId,
+      cleanupAvailable: false,
+      pending,
+    }), {
+      status: 409,
+      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    })
+  }
+  return json({
+    sessionId,
+    parentSessionId,
+    atSeq: boundarySeq,
+    inheritedEventCount,
+    pending,
+    edge: {
+      childId: sessionId,
+      parentId: parentSessionId,
+      atSeq: boundarySeq,
+      turn: point.turn,
+      snippet: point.snippet,
+      title: edge.title,
+    },
+  })
+}
+
+/**
+ * Resolve a requested boundary to the enclosing completed Turn end.
+ * The TurnTail client slot reports the closing Assistant message seq; older
+ * clients may send that directly. Accept it only when a matching turn/end
+ * follows in the same Turn, and always fork at that Turn end.
+ */
+function resolveBranchBoundary(events, atSeq) {
+  if (!Array.isArray(events) || !Number.isSafeInteger(atSeq) || atSeq < 0 || atSeq >= events.length) {
+    return -1
+  }
+  const event = events[atSeq]
+  if (event?.type === 'turn/end') return atSeq
+  if (event?.type !== 'assistant/message') return -1
+  const turn = event.data?.turn
+  if (!Number.isSafeInteger(turn)) return -1
+  for (let index = atSeq + 1; index < events.length; index++) {
+    const candidate = events[index]
+    if (candidate?.type === 'turn/end' && candidate.data?.turn === turn) return index
+    if (candidate?.type === 'turn/start' && candidate.data?.turn !== turn) return -1
+  }
+  return -1
+}
+
+/** Count one-based turn number and capture the last prompt at the boundary. */
+function branchPoint(events, atSeq) {
+  let turn = 0
+  let prompt = ''
+  let answer = ''
+  for (let index = 0; index <= atSeq; index++) {
+    const event = events[index]
+    if (event?.type === 'turn/start') {
+      const value = Number(event.data?.turn)
+      turn = Number.isSafeInteger(value) && value > 0 ? value : turn + 1
+    } else if (event?.type === 'user/message') {
+      const text = textOf(event.data?.content)
+      if (text !== '') prompt = text
+    } else if (event?.type === 'assistant/message') {
+      const text = textOf(event.data?.message?.content)
+      if (text !== '') answer = text
+    }
+  }
+  return {
+    turn: Math.max(1, turn),
+    snippet: clip((prompt || answer).replace(/\s+/g, ' ').trim(), 72),
+  }
+}
+
+/** Give a branch a distinct, human-readable starting title. */
+function branchTitle(parentTitle, ordinal) {
+  const base = clip(parentTitle.trim() || '对话', 56)
+  return clip(ordinal <= 1 ? `${base} · 分支` : `${base} · 分支 ${ordinal}`, MAX_TITLE_CHARS)
+}
+
+/** The latest durable title in one event list. */
+function titleOfEvents(events) {
+  for (let index = (events?.length ?? 0) - 1; index >= 0; index--) {
+    const event = events[index]
+    if (event?.type === 'session/title' && typeof event.data?.title === 'string') {
+      const title = event.data.title.trim()
+      if (title !== '') return title
+    }
+  }
+  return ''
+}
+
+// ---------------------------------------------------------------- summarize
+
+/** POST /api/conversation-tree/summarize */
+async function summarize(ctx, request) {
+  const body = await readJson(request)
+  if (body === undefined) return failure(400, 'invalid-json')
+  const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+  if (sessionId === '') return failure(400, 'missing-fields')
+
+  let transcript
+  let sourceTitle
+  let routeSession
+  try {
+    const live = ctx.sessions.get(sessionId)
+    if (live !== undefined) {
+      transcript = transcriptOf(live.snapshotEvents(), inheritedOf(live))
+      sourceTitle = titleOfEvents(live.snapshotEvents()) || basename(live.header?.cwd ?? '') || '对话'
+      routeSession = live
+    } else {
+      const persistence = ctx.get('sessionPersistence')
+      if (!persistence) return failure(409, 'persistence-unavailable')
+      const stored = await persistedTranscript(persistence, sessionId)
+      if (stored === undefined) return failure(404, 'session-not-found')
+      transcript = stored.transcript
+      sourceTitle = stored.title || basename(stored.header?.cwd ?? '') || '对话'
+      routeSession = undefined
+    }
+  } catch (error) {
+    return failure(409, `summary-unverified:${errorMessage(error)}`)
+  }
+  if (transcript.text === '') return failure(409, 'source-empty')
+
+  const route = modelRoute(ctx, routeSession)
+  if (route === undefined) return failure(409, 'model-unavailable')
+
+  try {
+    const summary = await oneShot(ctx, route, `来源：${sourceTitle}\n\n${transcript.text}`)
+    if (summary === '') return failure(409, 'summary-empty')
+    return json({ summary, chars: summary.length, sourceTitle })
+  } catch (error) {
+    return failure(409, `summary-failed:${errorMessage(error)}`)
+  }
+}
+
+// ------------------------------------------------------------------- delete
+
+/** POST /api/conversation-tree/delete */
+async function deleteSubtree(ctx, request) {
+  const body = await readJson(request)
+  if (body === undefined) return failure(400, 'invalid-json')
+  const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+  if (sessionId === '') return failure(400, 'missing-fields')
+  if (!SUPPORTED_DELETE_PLATFORMS.has(process.platform)) {
+    return failure(501, 'deletion-platform-unsupported')
+  }
+
+  let known
+  try {
+    known = await withTree(cloneRegistry)
+  } catch (error) {
+    return failure(503, `tree-registry-failed:${errorMessage(error)}`)
+  }
+  const all = [...known.edges, ...known.pending]
+  const target = all.find((edge) => edge.childId === sessionId)
+  if (target === undefined) return failure(403, 'cannot-delete-root')
+  const subtree = subtreeEdges(all, sessionId)
+  if (subtree.length === 0) return failure(409, 'not-a-tree-node')
+
+  const persistence = ctx.get('sessionPersistence')
+  try {
+    assertJsonlBackend(persistence)
+  } catch (error) {
+    return failure(501, `deletion-unsupported:${errorMessage(error)}`)
+  }
+
+  // Preflight every target before disposing anything.
+  const snapshots = new Map()
+  try {
+    for (const edge of subtree) {
+      const handle = handles.get(edge.childId)
+      const liveAgent = ctx.agents.get(edge.childId)
+      if (handle !== undefined) {
+        // Native archive can dispose the agent while this registry still holds
+        // the one-shot handle. A stale handle must not block file cleanup.
+        if (liveAgent === undefined && ctx.sessions.get(edge.childId) === undefined) {
+          handles.delete(edge.childId)
+          disposeFailures.delete(edge.childId)
+        } else if (liveAgent !== undefined
+          && originalService(liveAgent) !== originalService(handle.agent)) {
+          // A page reload can resume the same branch through the native
+          // controller, producing a different live Agent under the same id.
+          // The old one-shot handle no longer owns it.
+          handles.delete(edge.childId)
+          disposeFailures.delete(edge.childId)
+        }
+      }
+      if (liveAgent !== undefined) {
+        // A branch reopened by the native UI (or surviving a plugin reload)
+        // has no plugin-owned AgentHandle. Verify its durable binding now;
+        // the deletion loop stops it through the Agent's scope.
+        assertDeleteHeader(liveAgent.session?.header, edge, persistence)
+      } else if (handle === undefined && ctx.sessions.get(edge.childId) !== undefined) {
+        throw new Error(`session-live:${edge.childId}`)
+      }
+      const snapshot = await persistence.stat(edge.childId)
+      if (snapshot !== undefined) {
+        assertDeleteHeader(snapshot.header, edge, persistence)
+        snapshots.set(edge.childId, snapshot)
+      }
+    }
+  } catch (error) {
+    return failure(409, `delete-preflight:${errorMessage(error)}`)
+  }
+
+  const deleted = []
+  let failureMessageText = ''
+  for (const edge of subtree) {
+    try {
+      if (disposeFailures.has(edge.childId)) {
+        throw new Error(`dispose-failed:${errorMessage(disposeFailures.get(edge.childId))}`)
+      }
+      const handle = handles.get(edge.childId)
+      if (handle !== undefined) {
+        assertOwnedLive(ctx, edge.childId, handle)
+        try {
+          await handle.dispose()
+        } catch (error) {
+          handles.delete(edge.childId)
+          disposeFailures.set(edge.childId, error)
+          throw error
+        }
+        handles.delete(edge.childId)
+        disposeFailures.delete(edge.childId)
+      } else if (ctx.agents.get(edge.childId) !== undefined) {
+        await retireUnownedBranch(ctx, edge.childId)
+      }
+      if (ctx.agents.get(edge.childId) !== undefined || ctx.sessions.get(edge.childId) !== undefined) {
+        throw new Error(`session-live:${edge.childId}`)
+      }
+      const snapshot = snapshots.get(edge.childId)
+      if (snapshot !== undefined) {
+        await deleteColdSession(persistence, edge)
+      }
+      // The session files are gone, but the workspace registry still owns the
+      // id. Detach it before publishing the deletion so the native sidebar
+      // cannot keep a ghost row (or a stale archived/pinned entry) after the
+      // tree says the conversation was deleted.
+      await cleanupWorkspaceSession(ctx, edge.childId)
+      deleted.push(edge.childId)
+    } catch (error) {
+      failureMessageText = errorMessage(error)
+      break
+    }
+  }
+
+  if (deleted.length > 0) {
+    try {
+      await withTree(async (current) => {
+        const gone = new Set(deleted)
+        current.edges = current.edges.filter((edge) => !gone.has(edge.childId))
+        current.pending = current.pending.filter((edge) => !gone.has(edge.childId))
+        await saveTreeRegistry(current)
+      })
+    } catch (error) {
+      return failure(503, `registry-cleanup-failed:${errorMessage(error)}`)
+    }
+  }
+
+  if (failureMessageText !== '') {
+    return new Response(JSON.stringify({
+      error: `delete-partial:${failureMessageText}`,
+      deleted,
+    }), {
+      status: 409,
+      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    })
+  }
+  return json({ ok: true, deleted })
+}
+
+/** All edges in one child's subtree, children before parents. */
+function subtreeEdges(edges, childId) {
+  const children = new Map()
+  for (const edge of edges) {
+    const list = children.get(edge.parentId)
+    if (list === undefined) children.set(edge.parentId, [edge])
+    else list.push(edge)
+  }
+  const ordered = []
+  const visit = (id, seen) => {
+    if (seen.has(id)) throw new Error('conversation-tree-cycle')
+    seen.add(id)
+    for (const child of children.get(id) ?? []) visit(child.childId, seen)
+    const edge = edges.find((candidate) => candidate.childId === id)
+    if (edge !== undefined) ordered.push(edge)
+  }
+  visit(childId, new Set())
+  return ordered
+}
+
+/**
+ * Drop one deleted session from every workspace accounting set.
+ *
+ * File deletion alone leaves `workspace.json` holding the id. The native
+ * workspace/session surfaces then have to rediscover that the id is gone,
+ * which is exactly the window where a deleted branch reappears as a ghost.
+ * Detach is idempotent, so every workspace is tried without first proving
+ * membership; archive/pin sets are registry-global.
+ *
+ * @param ctx - plugin context.
+ * @param sessionId - session whose files were already removed.
+ */
+async function cleanupWorkspaceSession(ctx, sessionId) {
+  let registry
+  try {
+    registry = ctx.get('workspaceRegistry')
+  } catch {
+    return
+  }
+  if (registry === undefined || registry === null) return
+  const failures = []
+  const run = async (label, operation) => {
+    if (typeof operation !== 'function') return
+    try {
+      await operation()
+    } catch (error) {
+      failures.push(`${label}:${errorMessage(error)}`)
+    }
+  }
+  await run('unarchive', () => registry.unarchiveSession?.(sessionId))
+  await run('unpin', () => registry.unpinSession?.(sessionId))
+  let workspaces = []
+  try {
+    workspaces = typeof registry.list === 'function' ? registry.list() : []
+  } catch (error) {
+    failures.push(`list:${errorMessage(error)}`)
+  }
+  for (const workspace of Array.isArray(workspaces) ? workspaces : []) {
+    await run('detach', () => workspace?.detachSession?.(sessionId))
+  }
+  if (failures.length > 0) throw new Error(`workspace-cleanup-failed:${failures.join(';')}`)
+}
+
+/**
+ * Remove workspace/archive/pin ids whose session no longer exists.
+ *
+ * The explicit cleanup above covers ids deleted by this version. Older
+ * deletions could leave entries in `workspace.json`; this one-time pass makes
+ * the plugin's own deletions retroactive without touching a valid live or
+ * cold session. If the persistence listing fails, nothing is pruned.
+ *
+ * @param ctx - plugin context.
+ */
+async function reconcileWorkspaceRegistry(ctx) {
+  let registry
+  let persistence
+  try {
+    registry = ctx.get('workspaceRegistry')
+    persistence = ctx.get('sessionPersistence')
+  } catch {
+    return
+  }
+  if (registry === undefined || persistence === undefined || typeof persistence.list !== 'function') return
+  const snapshots = await persistence.list()
+  const known = new Set()
+  for (const snapshot of snapshots) {
+    const id = snapshot?.header?.id
+    if (typeof id === 'string' && id !== '') known.add(id)
+  }
+  try {
+    for (const session of ctx.sessions.list()) known.add(session.id)
+  } catch {
+    /* live sessions are a bonus; the persisted listing is authoritative */
+  }
+  for (const workspace of typeof registry.list === 'function' ? registry.list() : []) {
+    const ids = workspace?.record?.sessionIds
+    if (!Array.isArray(ids)) continue
+    for (const id of ids) {
+      if (!known.has(id) && typeof workspace.detachSession === 'function') {
+        await workspace.detachSession(id)
+      }
+    }
+  }
+  for (const id of registry.archivedSessionIds ?? []) {
+    if (!known.has(id)) await registry.unarchiveSession(id)
+  }
+  for (const id of registry.pinnedSessionIds ?? []) {
+    if (!known.has(id)) await registry.unpinSession(id)
+  }
+}
+
+/**
+ * Stop an Agent that has no plugin-owned handle (for example after a plugin
+ * reload, or when the native UI reopened a branch). The handle is a capability
+ * we no longer hold; its public Agent still exposes cancellation and the
+ * scope disposer that unwinds agent-local registrations. The caller verifies
+ * the durable header before reaching this point and that both registries are
+ * empty after it.
+ *
+ * @param ctx - plugin context.
+ * @param sessionId - branch to retire.
+ */
+async function retireUnownedBranch(ctx, sessionId) {
+  const agent = ctx.agents.get(sessionId)
+  if (agent === undefined) return
+  if (typeof agent.cancel !== 'function' || agent.scope === undefined
+    || typeof agent.scope.dispose !== 'function') {
+    throw new Error(`session-live:${sessionId}`)
+  }
+  agent.cancel({ kind: 'disposed' }, { keepInbox: false })
+  if (typeof agent.whenIdle === 'function') await agent.whenIdle()
+  await agent.scope.dispose()
+  // Scope disposal starts the agent-loop teardown asynchronously; wait for
+  // the agent and session registry entries to disappear instead of assuming
+  // one tick is enough.
+  for (let attempt = 0; attempt < 60; attempt++) {
+    if (ctx.agents.get(sessionId) === undefined && ctx.sessions.get(sessionId) === undefined) return
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  // A native-resumed agent can survive scope disposal because the controller,
+  // not this plugin, owns its fiber. Detach the exact registry entries; the
+  // scope teardown above already cancelled and quiesced the loop.
+  const agentEntry = ctx.agents.store?.get?.(sessionId)
+  if (agentEntry !== undefined && typeof ctx.agents.detachEntered === 'function') {
+    ctx.agents.detachEntered(agentEntry)
+  }
+  const sessionEntry = ctx.sessions.store?.get?.(sessionId)
+  if (sessionEntry !== undefined && typeof ctx.sessions.detachEntered === 'function') {
+    ctx.sessions.detachEntered(sessionEntry)
+  }
+  if (ctx.agents.get(sessionId) === undefined && ctx.sessions.get(sessionId) === undefined) return
+  const agentStill = ctx.agents.get(sessionId) !== undefined
+  const sessionStill = ctx.sessions.get(sessionId) !== undefined
+  throw new Error(`session-live:${sessionId}:agent=${agentStill}:session=${sessionStill}`)
+}
+
+/** Refuse to dispose a handle when another live agent owns the same id. */
+function assertOwnedLive(ctx, sessionId, handle) {
+  const live = ctx.agents.get(sessionId)
+  if (live !== undefined && originalService(live) !== originalService(handle?.agent)) {
+    throw new Error(`session-live:${sessionId}`)
+  }
+}
+
+/** Verify the durable header belongs to this exact branch edge. */
+function assertDeleteHeader(header, edge, persistence) {
+  if (header?.id !== edge.childId || header?.parentSession !== edge.parentId
+    || typeof header?.cwd !== 'string' || !isAbsolute(header.cwd)) {
+    throw new Error(`session-binding-mismatch:${edge.childId}`)
+  }
+  if (typeof persistence.root !== 'string' || !isAbsolute(persistence.root)) {
+    throw new Error('session-backend-mismatch')
+  }
+}
+
+/**
+ * Delete one cold branch after proving its exact directory layout.
+ * Only the verified Windows and macOS backends reach this function.
+ */
+async function deleteColdSession(persistence, edge) {
+  let snapshot = await persistence.stat(edge.childId)
+  if (snapshot === undefined) return
+  assertDeleteHeader(snapshot.header, edge, persistence)
+  const intent = { id: edge.childId, root: persistence.root, cwd: snapshot.header.cwd }
+  let before = await inspectSessionDirectory(intent, persistence, true)
+  if (before.logs.length === 0) throw new Error('session-logs-missing')
+  let lease
+  try {
+    lease = await persistence.open(edge.childId, 'write')
+    assertDeleteHeader(lease.header, edge, persistence)
+    const locked = await inspectSessionDirectory(intent, persistence, true)
+    if (!sameDirectorySnapshot(before, locked)
+      || (!lockIsKernelObject() && !locked.lock)) throw new Error('session-directory-changed')
+    for (const log of locked.logs) {
+      const now = await lstat(join(locked.dir, log.name), { bigint: true })
+      if (!now.isFile() || now.nlink !== 1n || now.dev !== log.dev || now.ino !== log.ino) {
+        throw new Error('session-log-changed')
+      }
+      await unlink(join(locked.dir, log.name))
+    }
+    const after = await inspectSessionDirectory(intent, persistence, true)
+    if (lockIsKernelObject()) {
+      if (after.logs.length !== 0 || after.entries.length !== 0
+        || !sameIdentity(locked.dirStat, after.dirStat)) throw new Error('session-directory-changed')
+      await removeVerifiedEmptyDirectory(after)
+    } else {
+      if (after.logs.length !== 0 || !after.lock || !sameIdentity(locked.dirStat, after.dirStat)
+        || !sameIdentity(locked.lock, after.lock)) throw new Error('session-directory-changed')
+      await syncVerifiedDirectory(locked.dirStat, locked.dir)
+    }
+  } finally {
+    if (lease !== undefined) await lease.close()
+  }
+  if (lockIsKernelObject()) {
+    const settled = await inspectOrMissing(intent, persistence, true)
+    if (settled !== undefined && (settled.logs.length !== 0 || settled.entries.length !== 0)) {
+      throw new Error('session-directory-changed')
+    }
+  }
+}
+
+// --------------------------------------------------------------- persistence
+
+function originalService(service) { return service?.[Symbol.for('cordis.original')] ?? service }
+
+/**
+ * Pin the *implementation*, not merely the spoofable service label.
+ * Only revisions whose lease and artifact layout were reviewed are accepted.
+ */
+const JSONL_BACKEND_FINGERPRINTS = new Set([
+  // DSH 0.2.1-rc.2
+  'bb0e12b14bd21adec58c51934f00014e482380102f09aa5e935536c57c0d6e1e',
+  // DSH 0.2.2-rc.1 (same session.lock lease, v4 artifact names, keep-lock release)
+  '3b266ac3f592216e5967eedce615630e07024c68637fe9f86ba152419805c3f7',
+])
+
+/** Pin the implementation that owns the artifact layout. */
+function assertJsonlBackend(persistence) {
+  const original = persistence?.[Symbol.for('cordis.original')] ?? persistence
+  const ctor = original?.constructor
+  const fingerprint = typeof ctor === 'function'
+    ? createHash('sha256').update(Function.prototype.toString.call(ctor)).digest('hex') : ''
+  if (ctor?.name !== 'JsonlSessionPersistence'
+    || !JSONL_BACKEND_FINGERPRINTS.has(fingerprint)
+    || typeof persistence.root !== 'string' || !isAbsolute(persistence.root)
+    || resolve(persistence.root) !== persistence.root
+    || !['none', 'zstd'].includes(persistence.compression)
+    || persistence.generationFormat?.currentVersion !== 4) throw new Error('unsupported-persistence-backend')
+}
+
+/** Whether the write lock is a kernel object rather than a `session.lock` file. */
+function lockIsKernelObject() {
+  return process.platform === 'win32'
+}
+
+/** Identical to the rc.2 backend's UTF-16 path encoding. */
+function sideProjectKey(cwd) {
+  let readable = ''
+  let separator = false
+  for (let i = 0; i < cwd.length; i++) {
+    const code = cwd.charCodeAt(i)
+    const ch = String.fromCharCode(code)
+    if (ch === '/' || ch === '\\' || ch === ':') {
+      if (!separator) readable += '-'
+      separator = true
+    } else if (ch !== '~' && /^[A-Za-z0-9._-]$/.test(ch)) {
+      readable += ch
+      separator = false
+    } else {
+      readable += `~${code.toString(16).toUpperCase().padStart(4, '0')}`
+      separator = false
+    }
+  }
+  return `--${(readable.replace(/^-+/, '') || 'root').slice(0, 251)}--`
+}
+
+function sideSegment(raw) {
+  if (!raw) throw new Error('empty-session-id')
+  if (raw === '.') return '~002E'
+  if (raw === '..') return '~002E~002E'
+  let out = ''
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw.charCodeAt(i)
+    const ch = String.fromCharCode(code)
+    out += ch !== '~' && /^[A-Za-z0-9._-]$/.test(ch) ? ch : `~${code.toString(16).toUpperCase().padStart(4, '0')}`
+  }
+  return out
+}
+
+/**
+ * Compare two bigint stats by the identity the platform actually exposes.
+ * POSIX and NTFS both report a volume and file index, so a replaced file or
+ * directory never compares equal; a volume whose entries report index zero
+ * falls back to creation and modification time.
+ */
+function sameIdentity(a, b) {
+  if (a === undefined || b === undefined) return false
+  if (a.dev !== b.dev) return false
+  if (a.ino !== 0n || b.ino !== 0n) return a.ino === b.ino
+  return a.birthtimeNs === b.birthtimeNs && a.mtimeNs === b.mtimeNs
+}
+
+/**
+ * lstat every ancestor and every entry; no recursive removal or symlink following.
+ * @param intent - the verified binding that locates the session directory.
+ * @param persistence - the verified backend that owns the artifact layout.
+ * @param allowEmpty - permit a directory without a log (an interrupted deletion).
+ * @returns the inspected path, directory identities, entry names, logs and lock.
+ */
+async function inspectSessionDirectory(intent, persistence, allowEmpty) {
+  if (intent.root !== persistence.root || !isAbsolute(intent.cwd) || !intent.id) {
+    throw new Error('invalid-session-location')
+  }
+  const dir = join(intent.root, sideProjectKey(intent.cwd), sideSegment(intent.id))
+  const rootPart = parse(dir).root
+  let path = rootPart
+  const components = dir.slice(rootPart.length).split(/[\\/]+/).filter(Boolean)
+  const directories = []
+  const first = await lstat(path, { bigint: true })
+  if (!first.isDirectory() || first.isSymbolicLink()) throw new Error('unsafe-session-ancestor')
+  directories.push(first)
+  for (const component of components) {
+    path = join(path, component)
+    const info = await lstat(path, { bigint: true })
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('unsafe-session-ancestor')
+    directories.push(info)
+  }
+  const entries = []
+  const logs = []
+  let lock
+  const versions = new Set()
+  for (const name of await readdir(dir)) {
+    const info = await lstat(join(dir, name), { bigint: true })
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n) throw new Error('unsafe-session-entry')
+    entries.push(name)
+    if (name === 'session.lock') {
+      // Windows excludes writers with a named kernel semaphore keyed by this
+      // path and never creates the file, so a stray one is not this backend's.
+      if (lockIsKernelObject()) throw new Error('unexpected-session-entry')
+      if (info.size !== 0n) throw new Error('unsafe-session-lock')
+      lock = info
+      continue
+    }
+    const match = /^session(?:\.v([1-9][0-9]*))?\.jsonl(\.zstd)?$/.exec(name)
+    const version = match ? Number(match[1] ?? 0) : NaN
+    if (!match || !Number.isSafeInteger(version) || version > 4 || versions.has(version)) {
+      throw new Error('unexpected-session-entry')
+    }
+    versions.add(version)
+    logs.push({ name, version, dev: info.dev, ino: info.ino })
+  }
+  logs.sort((a, b) => a.version - b.version)
+  // Avoid write-open's historical migration, which modifies the log itself.
+  if (logs.length && !logs.some((log) => log.version === 4
+    && log.name === `session.v4.jsonl${persistence.compression === 'zstd' ? '.zstd' : ''}`)) {
+    throw new Error('unsupported-session-generation')
+  }
+  if (!allowEmpty && !logs.length) throw new Error('session-logs-missing')
+  return { dir, dirStat: directories.at(-1), directories, entries, logs, lock }
+}
+
+/** Inspect a session directory, treating a Windows session that is already gone as absent. */
+async function inspectOrMissing(intent, persistence, allowEmpty) {
+  try {
+    return await inspectSessionDirectory(intent, persistence, allowEmpty)
+  } catch (error) {
+    if (lockIsKernelObject() && error?.code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
+/**
+ * Open the inspected directory, prove it is still the same object, and fsync it
+ * where the platform exposes that contract. Windows has no parent-directory
+ * fsync; the backend publishes entries with write-through namespace operations.
+ */
+async function syncVerifiedDirectory(expected, dir) {
+  const directory = await open(dir, 'r')
+  try {
+    const opened = await directory.stat({ bigint: true })
+    if (!sameIdentity(expected, opened)) throw new Error('session-directory-changed')
+    if (!lockIsKernelObject()) await directory.sync()
+  } finally {
+    await directory.close()
+  }
+}
+
+/**
+ * Remove one verified empty session directory. Windows keeps no lock file, so
+ * the directory itself is the last artifact. An empty directory that cannot be
+ * removed right now (a held handle from an indexer) is accepted as residue;
+ * a non-empty one proves a racing writer.
+ */
+async function removeVerifiedEmptyDirectory(snapshot) {
+  if (snapshot.logs.length !== 0 || snapshot.entries.length !== 0) throw new Error('session-directory-changed')
+  try {
+    await rmdir(snapshot.dir)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return
+    if (error?.code === 'ENOTEMPTY' || error?.code === 'EEXIST') throw new Error('session-directory-changed')
+  }
+}
+
+function sameDirectorySnapshot(a, b) {
+  return a.directories.length === b.directories.length
+    && a.directories.every((value, index) => sameIdentity(value, b.directories[index]))
+    && (a.lock === undefined || (b.lock !== undefined && sameIdentity(a.lock, b.lock)))
+    && a.logs.length === b.logs.length
+    && a.logs.every((log, index) => log.name === b.logs[index].name && sameIdentity(log, b.logs[index]))
+}
+
+// ----------------------------------------------------------------- models
+
+/**
+ * Keep the branch session's request route aligned with its durable model
+ * selection, mirroring the session controller's model-selection wiring.
+ */
+function installModelRoute(ctx, agentCtx, agent, fallback) {
+  const effective = () => currentModelSelection(ctx, agent.session) ?? fallback ?? modelRoute(ctx, undefined)
+  agentCtx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+    const assembled = await next()
+    const selected = effective()
+    if (selected === undefined) return assembled
+    return {
+      ...assembled,
+      variables: { ...assembled.variables, provider: selected.provider, model: selected.model },
+    }
+  })
+  agentCtx.on('agent/request', async (_payload, next) => {
+    const resolved = await next()
+    const selected = effective()
+    if (selected === undefined) return resolved
+    const { reasoningEffort: _inherited, ...rest } = resolved
+    return {
+      ...rest,
+      provider: selected.provider,
+      model: selected.model,
+      ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }),
+    }
+  })
+}
+
+/** Read the session's pending or last-used model selection. */
+function currentModelSelection(ctx, session) {
+  try {
+    const state = ctx.sessionProjections.stateOf(session, 'modelSelection')
+    return state?.pending ?? state?.lastUsed ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Read a cold session's own transcript from persistence.
+ * @returns the transcript, stored header, and durable title, or undefined.
+ */
+async function persistedTranscript(persistence, sessionId) {
+  let handle
+  try {
+    handle = await persistence.open(sessionId, 'read')
+  } catch {
+    return undefined
+  }
+  try {
+    const result = await handle.read()
+    const inherited = typeof handle.inheritedEventCount === 'number' ? handle.inheritedEventCount : 0
+    return {
+      transcript: transcriptOf(result.events, inherited),
+      header: handle.header,
+      title: titleOfEvents(result.events),
+    }
+  } finally {
+    await handle.close().catch(() => {})
+  }
+}
+
+/** Run one tool-less completion and collect its text. */
+async function oneShot(ctx, route, prompt) {
+  let text = ''
+  for await (const chunk of ctx.llm.stream({
+    provider: route.provider,
+    model: route.model,
+    ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
+    system: COMPRESS_SYSTEM,
+    messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+  })) {
+    if (chunk.type === 'text-delta') {
+      text += chunk.text
+    } else if (chunk.type === 'finish') {
+      if (chunk.reason?.kind === 'error') throw new Error(failureMessage(chunk.reason.failure))
+      break
+    }
+  }
+  return text.trim()
+}
+
+/** Resolve the Session's current provider route, falling back to the default. */
+function modelRoute(ctx, session) {
+  if (session !== undefined) {
+    let config
+    try {
+      config = session.requestHeader()?.config
+    } catch {
+      config = undefined
+    }
+    if (usableRoute(config)) return routeOf(config)
+  }
+  let fallback
+  try {
+    fallback = ctx.get('agentDefaultModel')?.currentSelection?.()
+  } catch {
+    fallback = undefined
+  }
+  if (usableRoute(fallback)) return routeOf(fallback)
+  return undefined
+}
+
+/** Whether a candidate carries a provider and model. */
+function usableRoute(value) {
+  return value !== undefined && value !== null
+    && typeof value.provider === 'string' && value.provider !== ''
+    && typeof value.model === 'string' && value.model !== ''
+}
+
+/** Project a selection into the request route shape. */
+function routeOf(value) {
+  return {
+    provider: value.provider,
+    model: value.model,
+    ...(typeof value.reasoningEffort === 'string' ? { reasoningEffort: value.reasoningEffort } : {}),
+  }
+}
+
+// --------------------------------------------------------------- transcript
+
+/**
+ * Fold committed events into a readable record.
+ * @param events - Session events.
+ * @param fromSeq - first event seq to include.
+ * @returns the transcript text and its truncation flag.
+ */
+function transcriptOf(events, fromSeq = 0) {
+  const lines = []
+  for (const event of events ?? []) {
+    if (typeof event?.seq === 'number' && event.seq < fromSeq) continue
+    const data = event?.data ?? {}
+    switch (event?.type) {
+      case 'user/message': {
+        const text = textOf(data.content)
+        if (text !== '') lines.push(`【用户】${text}`)
+        break
+      }
+      case 'assistant/message': {
+        const text = textOf(data.message?.content)
+        if (text !== '') lines.push(`【助手】${text}`)
+        break
+      }
+      case 'tool/call': {
+        const name = typeof data.name === 'string' ? data.name : 'tool'
+        const args = typeof data.arguments === 'string' ? data.arguments : ''
+        lines.push(`【调用 ${name}】${clip(args, 240)}`)
+        break
+      }
+      case 'tool/result': {
+        const text = textOf(data.message?.content)
+        if (text !== '') lines.push(`【工具结果】${clip(text, 400)}`)
+        break
+      }
+      default:
+        break
+    }
+  }
+  const full = lines.join('\n\n')
+  if (full.length > MAX_CONTEXT_CHARS) {
+    return { text: full.slice(-MAX_CONTEXT_CHARS), truncated: true }
+  }
+  return { text: full, truncated: false }
+}
+
+/** Read a live Session's inherited prefix length. */
+function inheritedOf(session) {
+  return typeof session.inheritedEventCount === 'number' ? session.inheritedEventCount : 0
+}
+
+/** Join the text blocks of one message. */
+function textOf(content) {
+  if (!Array.isArray(content)) return ''
+  const parts = []
+  for (const block of content) {
+    if (block !== null && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') {
+      parts.push(block.text)
+    }
+  }
+  return parts.join('\n').trim()
+}
+
+/** Bound a string with an ellipsis. */
+function clip(value, limit) {
+  if (value.length <= limit) return value
+  return `${value.slice(0, limit)}…`
+}
+
+// ---------------------------------------------------------------- transport
+
+/** Read a JSON body without throwing. */
+async function readJson(request) {
+  try {
+    const value = await request.json()
+    return typeof value === 'object' && value !== null ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Describe one thrown value. */
+function errorMessage(error) {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
+/** Describe one terminal LLM failure. */
+function failureMessage(failure) {
+  if (failure !== null && typeof failure === 'object' && typeof failure.message === 'string' && failure.message !== '') {
+    return failure.message
+  }
+  return errorMessage(failure)
+}
+
+/** Build a JSON response. */
+function json(value) {
+  return new Response(JSON.stringify(value), {
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+  })
+}
+
+/** Build a JSON failure response. */
+function failure(status, code) {
+  return new Response(JSON.stringify({ error: code }), {
+    status,
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+  })
+}
+
+/** Pure helpers used by the unit tests. */
+export const __test = {
+  buildTree,
+  branchPoint,
+  resolveBranchBoundary,
+  branchTitle,
+  subtreeEdges,
+  transcriptOf,
+  titleOfEvents,
+  validEdge,
+  sideProjectKey,
+  sideSegment,
+  cleanupWorkspaceSession,
+  reconcileWorkspaceRegistry,
+  retireUnownedBranch,
+  createBranch,
+  readTree,
+  ownUsage,
+  ownCounts,
+}
