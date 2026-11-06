@@ -45,8 +45,8 @@ const TREE_LOCK = `${TREE_FILE}.lock`
 const LOCK_STALE_MS = 30_000
 /** Largest JSON body any route accepts; the plugin never needs more than a few hundred bytes. */
 const MAX_BODY_BYTES = 64 * 1024
-/** Workspace sessions one forest request may name. */
-const MAX_FOREST_SESSIONS = 500
+/** Workspace sessions one forest response may name; the rest are reported as truncated. */
+const MAX_FOREST_SESSIONS = 2000
 
 /** Transcript characters carried into one compression call. */
 const MAX_CONTEXT_CHARS = 140_000
@@ -525,32 +525,37 @@ async function readTree(ctx, request) {
  * POST /api/conversation-tree/forest
  *
  * Resolve every connected tree that touches one Workspace's Sessions. The
- * Workspace membership is client knowledge, so the caller names the Sessions;
- * the Host answers with one component per root, including the branches and
- * ancestors those Sessions belong to. Sessions that never branched come back
- * as single-node components, which is what makes the page a Workspace view
- * instead of a per-conversation one.
+ * caller names the conversation the page shows; `ctx.workspaceRegistry` owns
+ * the membership, so the Host resolves the rest itself. The response carries
+ * one component per root, including the branches and ancestors those Sessions
+ * belong to. Sessions that never branched come back as single-node
+ * components, which is what makes the page a Workspace view instead of a
+ * per-conversation one.
  */
 async function readForest(ctx, request) {
   if (!sameSiteRequest(request)) return failure(403, 'cross-origin')
   const body = await readJson(request)
   if (body === undefined) return failure(400, 'invalid-json')
-  if (!Array.isArray(body.sessionIds)) return failure(400, 'missing-fields')
-  const sessionIds = []
-  const seen = new Set()
-  for (const value of body.sessionIds) {
+  const currentId = typeof body.sessionId === 'string' ? body.sessionId : ''
+  if (currentId.length > 256) return failure(400, 'invalid-session-id')
+  // Older clients still name their Workspace's Sessions; the host treats that
+  // list as a hint and resolves the authoritative membership itself.
+  const hinted = Array.isArray(body.sessionIds) ? body.sessionIds : []
+  for (const value of hinted) {
     if (typeof value !== 'string' || value === '' || value.length > 256) {
       return failure(400, 'invalid-session-id')
     }
-    if (seen.has(value)) continue
-    seen.add(value)
-    sessionIds.push(value)
   }
-  if (sessionIds.length === 0) return failure(400, 'missing-fields')
-  if (sessionIds.length > MAX_FOREST_SESSIONS) return failure(400, 'too-many-sessions')
+  if (currentId === '' && hinted.length === 0) return failure(400, 'missing-fields')
+  const members = forestMembers(ctx, currentId, hinted)
+  const total = members.length
+  const sessionIds = members.slice(0, MAX_FOREST_SESSIONS)
   const includeStats = body.stats === true
   try {
     const payload = await withTreeForRead(ctx, sessionIds, (known) => buildForest(known, sessionIds))
+    payload.memberCount = sessionIds.length
+    payload.total = total
+    payload.truncated = total > sessionIds.length
     pruneDeadHandles(ctx)
     if (includeStats) {
       const nodes = payload.components.flatMap((component) => component.nodes)
@@ -560,6 +565,47 @@ async function readForest(ctx, request) {
   } catch (error) {
     return failure(409, `tree-failed:${errorMessage(error)}`)
   }
+}
+
+/**
+ * The Sessions one Workspace read covers.
+ *
+ * `ctx.workspaceRegistry` owns workspace membership and its canonical-cwd
+ * header index, so the host resolves it here instead of trusting a list the
+ * client assembled. A conversation outside every workspace scopes to itself.
+ * The current Session is pinned first so a cap can never drop it.
+ *
+ * @param ctx - plugin context.
+ * @param currentId - conversation the page is showing, if the caller named one.
+ * @param hinted - ids an older client named; unioned in for compatibility.
+ * @returns ordered, de-duplicated Session ids.
+ */
+function forestMembers(ctx, currentId, hinted) {
+  const ordered = []
+  const seen = new Set()
+  const push = (id) => {
+    if (typeof id !== 'string' || id === '' || seen.has(id)) return
+    seen.add(id)
+    ordered.push(id)
+  }
+  if (currentId !== '') push(currentId)
+  let scope
+  try {
+    const registry = ctx.get('workspaceRegistry')
+    const workspaces = registry !== undefined && typeof registry.list === 'function' ? registry.list() : []
+    for (const workspace of Array.isArray(workspaces) ? workspaces : []) {
+      const ids = workspace?.sessionIds
+      if (currentId !== '' && Array.isArray(ids) && ids.includes(currentId)) {
+        scope = ids
+        break
+      }
+    }
+  } catch {
+    scope = undefined
+  }
+  if (scope !== undefined) for (const id of scope) push(id)
+  for (const id of hinted) push(id)
+  return ordered
 }
 
 /**

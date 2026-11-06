@@ -33,7 +33,7 @@ dsh plugin --profile web add /path/to/dsh-conversation-tree
 
 ```bash
 npm pack
-dsh plugin --profile web add ./dsh-conversation-tree-0.6.0.tgz
+dsh plugin --profile web add ./dsh-conversation-tree-0.6.1.tgz
 ```
 
 宿主包 `@deepseek-ai/dsh-session` 声明为 peerDependency：链接安装时由 DSH 提供，无需额外安装；想把它放到插件本地目录或要在本地跑测试时，再执行 `npm install`。
@@ -54,7 +54,7 @@ dsh plugin --profile web add ./dsh-conversation-tree-0.6.0.tgz
 
 - 树只管理通过「对话树分支」创建的会话；DSH 原生分支按钮创建的分支不在树里。
 - 分支也会出现在普通会话列表中，树是额外的管理视图。
-- 工作区视图一次最多带入 300 个会话，超出部分会提示。
+- 工作区视图的会话范围由 Host 按工作区注册表解析；单次超过 2000 个会话时只显示前 2000 个并提示。
 - 删除仅支持 macOS 与 Windows 上已验证的 JSONL 会话后端；其他平台仍可创建、查看和带回。
 - 根对话不能删除；分支归档使用 DSH 原生归档，可撤销。
 - 树关系存放在 `$DSH_HOME/conversation-tree.json`，每个分支的会话日志里也留有一条边记录；注册表丢失时可从日志恢复祖先链。
@@ -82,7 +82,7 @@ Host 路由：
 
 ## 版本
 
-当前 0.6.0，历史记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前 0.6.1，历史记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 

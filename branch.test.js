@@ -383,8 +383,11 @@ test('readForest returns the component around a fresh branch and validates its b
   assert.equal((await readForest(ctx, request({ sessionIds: [] }))).status, 400)
   assert.equal((await readForest(ctx, request({ sessionIds: 'r' }))).status, 400)
   assert.equal((await readForest(ctx, request({ sessionIds: [''] }))).status, 400)
-  const tooMany = Array.from({ length: 501 }, (_, index) => `s${index}`)
-  assert.equal((await readForest(ctx, request({ sessionIds: tooMany }))).status, 400)
+  const tooMany = Array.from({ length: 2001 }, (_, index) => `s${index}`)
+  const capped = await (await readForest(ctx, request({ sessionIds: tooMany }))).json()
+  assert.equal(capped.truncated, true)
+  assert.equal(capped.memberCount, 2000)
+  assert.equal(capped.total, 2001)
   const crossOrigin = {
     json: async () => ({ sessionIds: ['r'] }),
     url: 'http://127.0.0.1:3080/api/conversation-tree/forest',
@@ -458,6 +461,36 @@ test('readForest leaves subagent sessions out of the tree', async () => {
   const forest = await (await readForest(ctx, request({ sessionIds: ['subagent'] }))).json()
   assert.equal(forest.components[0].rootId, 'subagent')
   assert.equal(forest.components[0].nodes.length, 1)
+})
+
+test('readForest resolves the workspace membership on the host', async () => {
+  const ctx = {
+    agents: { get() { return undefined } },
+    sessions: { get() { return undefined } },
+    sessionProjections: { stateOf() { return undefined } },
+    get(name) {
+      if (name === 'workspaceRegistry') {
+        return { list: () => [{ id: 'w1', title: '工作区', sessionIds: ['r', 'solo'] }] }
+      }
+      return undefined
+    },
+    effect(callback) { return callback() },
+  }
+  const forest = await (await readForest(ctx, request({ sessionId: 'r' }))).json()
+  assert.equal(forest.conversationCount, 2)
+  assert.equal(forest.memberCount, 2)
+  assert.equal(forest.total, 2)
+  assert.equal(forest.truncated, false)
+  assert.deepEqual(forest.components.map((component) => component.rootId).sort(), ['r', 'solo'])
+
+  // A conversation outside every workspace scopes to itself.
+  const lone = await (await readForest(ctx, request({ sessionId: 'elsewhere' }))).json()
+  assert.equal(lone.conversationCount, 1)
+  assert.equal(lone.components[0].rootId, 'elsewhere')
+
+  // A legacy client list is unioned in, never used to shrink the scope.
+  const union = await (await readForest(ctx, request({ sessionId: 'r', sessionIds: ['stale'] }))).json()
+  assert.deepEqual(union.components.map((component) => component.rootId).sort(), ['r', 'solo', 'stale'])
 })
 
 test('readForest fills each node with its own usage when stats are requested', async () => {

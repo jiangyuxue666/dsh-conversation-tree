@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1
+
+- **工作区成员解析下沉到 Host**。`/forest` 不再要求客户端打包这个工作区的会话列表：请求只带当前会话 id，Host 用 `ctx.workspaceRegistry` 的成员（和 UI 同一条 canonical-cwd 索引）解析范围，再并入旧客户端传来的列表作为提示。客户端因此去掉了 `forestSessionIds` 及其 300 上限逻辑，树页首屏也不再传输会话数组。
+- 截断改由 Host 判定：单次上限提高到 2000，响应新增 `memberCount` / `total` / `truncated`，界面提示改成「只显示前 N 个」。当前会话永远排在第一批，不会被截掉。
+- 兼容旧请求体 `{ sessionIds }`：仍接受，只做并集，不会用它缩小 Host 解析出的范围。
+- 版本 0.6.1。
+
 ## 0.6.0
 
 - **用量统计按后端 revision 缓存并持久化**。冷会话的 token / 轮次以前只放在内存里、30 秒过期，重开页面或重启 Host 就要把整份 JSONL 再解析一遍。现在样本按 `SessionPersistenceSnapshot.revision` 失效，写进 `$DSH_HOME/conversation-tree-stats.json`（原子替换、最多 2000 条、1 秒防抖）；后端不提供 revision 时仍退回原来的 30 秒 TTL。

@@ -97,7 +97,6 @@ const {
   modelStatsOf,
   componentTree,
   workspaceView,
-  forestSessionIds,
   forestModels,
   layoutPanels,
   treeForNode,
@@ -431,16 +430,6 @@ test('workspaceView resolves the owning workspace and falls back to one session'
   assert.deepEqual(fallback.sessionIds, ['b'])
 })
 
-test('forestSessionIds pins the current session and caps one request', () => {
-  assert.deepEqual(forestSessionIds(['a', 'b', 'a'], sessions, 'b'), ['b', 'a'])
-  assert.deepEqual(forestSessionIds(['a', 'b'], sessions, 'outside'), ['b', 'a'])
-  const many = Array.from({ length: 305 }, (_, index) => `s${index}`)
-  const capped = forestSessionIds(many, sessions, 's304')
-  assert.equal(capped.length, 300)
-  assert.equal(capped[0], 's304')
-  assert.equal(new Set(capped).size, 300)
-})
-
 test('forestModels lists every workspace conversation, with the current one first', () => {
   const projection = forestModels(forest, {
     sessions: forestSessions,
@@ -533,7 +522,7 @@ test('workspace overview renders every conversation on one shared canvas', async
     return { ok: true, json: async () => forest }
   }
   try {
-    const loaded = await store.loadForest('w1', ['b', 'solo', 'old'])
+    const loaded = await store.loadForest('w1', 'b')
     assert.equal(loaded.components.length, 3)
   } finally {
     globalThis.fetch = originalFetch

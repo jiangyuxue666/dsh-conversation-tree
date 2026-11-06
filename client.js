@@ -27,8 +27,6 @@ window.__ModuleLoader__.load({
     const DELETE_ROUTE = '/api/conversation-tree/delete'
     const STYLE_ID = 'dsh-conversation-tree/ui'
     const TOAST_MS = 4200
-    /** Workspace sessions one forest request names; the newest win. */
-    const MAX_FOREST_IDS = 300
     /** Every conversation tree is a panel on the shared canvas. */
     const PANEL_HEADER = 34
     const PANEL_GAP = 36
@@ -91,7 +89,7 @@ window.__ModuleLoader__.load({
       'forest.empty': '这个工作区还没有对话',
       'forest.noMatch': '没有匹配的对话',
       'forest.archivedOnly': '对话都已归档，点右上角的归档按钮显示',
-      'forest.truncated': '对话太多，只显示最近的 {count} 个',
+      'forest.truncated': '对话太多，只显示前 {count} 个',
       'panel.expand': '展开这棵对话树',
       'panel.collapse': '收起这棵对话树',
       'panel.collapsed': '已收起',
@@ -243,7 +241,7 @@ window.__ModuleLoader__.load({
       'forest.empty': 'This workspace has no conversations yet',
       'forest.noMatch': 'No conversation matches',
       'forest.archivedOnly': 'Every conversation is archived — use the archive button above',
-      'forest.truncated': 'Too many conversations; showing the most recent {count}',
+      'forest.truncated': 'Too many conversations; showing the first {count}',
       'panel.expand': 'Expand this conversation tree',
       'panel.collapse': 'Collapse this conversation tree',
       'panel.collapsed': 'Collapsed',
@@ -572,22 +570,21 @@ window.__ModuleLoader__.load({
          * same short window as a single tree: a page switch back and forth must
          * not re-read the registry every time.
          */
-        async loadForest(key, sessionIds, options = {}) {
+        async loadForest(key, currentId, options = {}) {
           if (typeof key !== 'string' || key === '') return undefined
-          const ids = Array.isArray(sessionIds)
-            ? sessionIds.filter((id) => typeof id === 'string' && id !== '')
-            : []
-          if (ids.length === 0) return undefined
+          if (typeof currentId !== 'string' || currentId === '') return undefined
           const includeStats = options.stats !== false
           // Two passes: the tree paints as soon as its shape is known, then the
           // per-Session numbers arrive. Reading a workspace of cold logs used to
           // block the first frame on every one of them.
           if (includeStats && options.defer !== false) {
-            const base = await this.loadForest(key, sessionIds, { ...options, stats: false })
+            const base = await this.loadForest(key, currentId, { ...options, stats: false })
             if (base === undefined) return undefined
-            return await this.loadForest(key, sessionIds, { ...options, stats: true, defer: false }) ?? base
+            return await this.loadForest(key, currentId, { ...options, stats: true, defer: false }) ?? base
           }
-          const signature = `${ids.length}:${ids.join('|')}`
+          // The workspace membership is the host's: it owns the registry. The
+          // id here only names the conversation the page is showing.
+          const signature = currentId
           if (options.force !== true) {
             const cached = state.forests[key]
             if (cached !== undefined && cached.signature === signature && cached.stats === includeStats
@@ -604,7 +601,7 @@ window.__ModuleLoader__.load({
             try {
               const data = await requestJson(FOREST_ROUTE, {
                 method: 'POST',
-                body: JSON.stringify({ sessionIds: ids, stats: includeStats }),
+                body: JSON.stringify({ sessionId: currentId, stats: includeStats }),
               }, 120000)
               if (epoch !== state.forestEpoch) {
                 set({ forestLoading: withoutKey(state.forestLoading, key) })
@@ -1014,34 +1011,6 @@ window.__ModuleLoader__.load({
         }
       }
       return { key: `session:${sessionId}`, title: '', sessionIds: [sessionId] }
-    }
-
-    /**
-     * The Sessions one forest request names.
-     *
-     * Recency order makes the 300-session ceiling keep the conversations a user
-     * is likely to want; the current conversation is pinned first so it can
-     * never be the one dropped. The order is stable while no conversation
-     * changes its activity, so a token counter ticking does not refetch.
-     */
-    function forestSessionIds(sessionIds, sessions, currentSessionId) {
-      const stampOf = (id) => {
-        const session = sessionOf(sessions, id)
-        return Number.isFinite(session?.updatedAt) ? session.updatedAt : 0
-      }
-      const seen = new Set()
-      const unique = []
-      for (const id of sessionIds) {
-        if (typeof id !== 'string' || id === '' || seen.has(id)) continue
-        seen.add(id)
-        unique.push(id)
-      }
-      unique.sort((a, b) => {
-        if (a === currentSessionId) return -1
-        if (b === currentSessionId) return 1
-        return stampOf(b) - stampOf(a) || a.localeCompare(b)
-      })
-      return unique.slice(0, MAX_FOREST_IDS)
     }
 
     /**
@@ -2460,11 +2429,9 @@ window.__ModuleLoader__.load({
       const workspaces = useWorkspaces((value) => value)
       const archived = React.useMemo(() => archivedSetOf(workspaces), [workspaces])
       const workspace = React.useMemo(() => workspaceView(workspaces, sessionId), [workspaces, sessionId])
-      const ids = React.useMemo(
-        () => forestSessionIds(workspace.sessionIds, sessions, sessionId),
-        [workspace, sessions, sessionId],
-      )
-      const idsKey = ids.join('|')
+      // The host resolves membership; this key only decides when to ask again
+      // because the client's workspace view saw a conversation appear or leave.
+      const membershipKey = workspace.sessionIds.join('|')
       const compact = useCompactLayout()
       const forest = state.forests[workspace.key]
       const loading = state.forestLoading[workspace.key] === true
@@ -2481,8 +2448,8 @@ window.__ModuleLoader__.load({
       const viewport = useElementSize(hostRef)
 
       React.useEffect(() => {
-        void store.loadForest(workspace.key, ids)
-      }, [workspace.key, idsKey, state.forestEpoch])
+        void store.loadForest(workspace.key, sessionId)
+      }, [workspace.key, sessionId, membershipKey, state.forestEpoch])
 
       // Opening a node calls openSession(..., { forceChat: true }); the fresh
       // page must land on Chat even if that conversation last remembered the
@@ -2611,7 +2578,7 @@ window.__ModuleLoader__.load({
       }, [query, sections.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
       async function refresh() {
-        const next = await store.loadForest(workspace.key, ids, { force: true })
+        const next = await store.loadForest(workspace.key, sessionId, { force: true })
         if (next === undefined) {
           const failure = store.get().forestErrors[workspace.key]
           if (failure !== undefined) store.toast('error', failure)
@@ -2700,7 +2667,7 @@ window.__ModuleLoader__.load({
       }
 
       const matchedCount = sections.reduce((total, section) => total + section.graph.matchedCount, 0)
-      const truncated = workspace.sessionIds.length > ids.length
+      const truncated = forest?.truncated === true
       const counts = workspace.title !== ''
         ? t('head.workspaceCount', {
           workspace: workspace.title,
@@ -2752,7 +2719,7 @@ window.__ModuleLoader__.load({
         : null
       const notes = []
       if (query.trim() !== '' && matchedCount === 0 && sections.length > 0) notes.push(t('forest.noMatch'))
-      if (truncated) notes.push(t('forest.truncated', { count: ids.length }))
+      if (truncated) notes.push(t('forest.truncated', { count: forest?.memberCount ?? projection.conversationCount }))
 
       return h('section', { className: 'ct-page' },
         header,
@@ -4181,7 +4148,6 @@ window.__ModuleLoader__.load({
         modelStatsOf,
         componentTree,
         workspaceView,
-        forestSessionIds,
         forestModels,
         treeForNode,
         layoutPanels,
