@@ -1,5 +1,10 @@
 # dsh-conversation-tree
 
+[English](README.en.md) | 中文
+
+[![CI](https://github.com/jiangyuxue666/dsh-conversation-tree/actions/workflows/ci.yml/badge.svg)](https://github.com/jiangyuxue666/dsh-conversation-tree/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > A workspace-wide conversation-tree view for DeepSeek Harness.
 
 DeepSeek Harness 的 Web 插件。将工作区内的对话及其派生分支绘制在同一块画布上，用于查看分支血缘与单个会话的用量，并完成分叉、带回、归档与删除。分支即普通 DSH 会话，模型、工具与斜杠命令均可正常使用。
