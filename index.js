@@ -48,10 +48,12 @@ const MAX_BODY_BYTES = 64 * 1024
 const MAX_CONTEXT_CHARS = 140_000
 /** Maximum branch title characters. */
 const MAX_TITLE_CHARS = 80
-/** Output budget for one bring-back brief. */
-const SUMMARY_MAX_TOKENS = 800
-/** A bring-back brief must not keep generating after the client gave up. */
-const SUMMARY_TIMEOUT_MS = 60_000
+/**
+ * A bring-back brief must not keep generating after the client gave up.
+ * The brief itself has no output budget: how much of a discussion to carry
+ * back is the model's and the user's call, not a fixed number here.
+ */
+const SUMMARY_TIMEOUT_MS = 180_000
 /** How long a cold-session usage sample stays reusable. */
 const STATS_TTL_MS = 30_000
 /**
@@ -94,7 +96,7 @@ const COMPRESS_SYSTEM = [
   '2. 然后用 3-6 条要点写清楚：结论与决定、改动过的文件或命令、验证结果、未完成事项、风险或待确认。',
   '3. 只写记录里出现过的事实；记录没提到的不写，不确定的标注「未确认」。',
   '4. 删掉寒暄、重复、试错过程和心理活动。',
-  '5. 总长不超过 400 字，使用与记录相同的语言。',
+  '5. 篇幅由内容决定：不要为了简短丢掉事实、决定和待办；内容多就写长一点，内容少就写短一点。使用与记录相同的语言。',
   '6. 直接输出摘要正文，不要加「以下是摘要」这类开场白。',
 ].join('\n')
 
@@ -1828,7 +1830,6 @@ async function oneShot(ctx, route, prompt, signal) {
       ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
       system: COMPRESS_SYSTEM,
       messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-      maxTokens: SUMMARY_MAX_TOKENS,
       signal: controller.signal,
     })) {
       if (chunk.type === 'text-delta') {

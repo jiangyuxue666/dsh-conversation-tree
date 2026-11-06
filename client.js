@@ -90,7 +90,7 @@ window.__ModuleLoader__.load({
       'target.regenerate': '重新压缩',
       'target.send': '发送',
       'target.back': '返回',
-      'target.truncated': '摘要达到长度上限，可能不完整，建议先补一句再发送。',
+      'target.truncated': '摘要被模型截断了，建议检查后再发送。',
       'root.badge': '根对话',
       'node.archived': '已归档',
       'node.pending': '登记中',
@@ -245,7 +245,7 @@ window.__ModuleLoader__.load({
       'target.regenerate': 'Compress again',
       'target.send': 'Send',
       'target.back': 'Back',
-      'target.truncated': 'The summary hit its length limit and may be incomplete; add a line before sending.',
+      'target.truncated': 'The model cut the summary short; check it before sending.',
       'head.errorTitle': 'The conversation tree could not be read',
       'path.current': 'Current position',
       'path.root': 'Root',
@@ -675,9 +675,9 @@ window.__ModuleLoader__.load({
       return `ct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
     }
 
-    async function requestJson(path, options = {}) {
+    async function requestJson(path, options = {}, timeoutMs = 60000) {
       const controller = new AbortController()
-      const timer = window.setTimeout(() => controller.abort(), 60000)
+      const timer = window.setTimeout(() => controller.abort(), timeoutMs)
       try {
         const response = await fetch(path, {
           ...options,
@@ -2303,7 +2303,7 @@ window.__ModuleLoader__.load({
           const summaryBody = await requestJson(SUMMARY_ROUTE, {
             method: 'POST',
             body: JSON.stringify({ sessionId: dialog.sourceId }),
-          })
+          }, 180000)
           const text = typeof summaryBody?.summary === 'string' ? summaryBody.summary : ''
           if (text === '') throw new Error(t('error.summary-empty'))
           setSummary(text)
