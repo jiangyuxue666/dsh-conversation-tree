@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Conversation tree",
-    "description": "A zoomable tree of a conversation and every branch: inspect lineage, turns, tokens and model in the side panel, then open, bring back, archive or delete."
+    "description": "Every conversation of the workspace drawn as its own tree on one shared canvas: inspect lineage, turns, tokens and model in the side panel, then open, bring back, archive or delete."
   }
 }

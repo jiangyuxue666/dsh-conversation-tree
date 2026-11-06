@@ -1,6 +1,6 @@
 import test, { after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -8,7 +8,7 @@ const home = await mkdtemp(join(tmpdir(), 'dsh-conversation-tree-'))
 const previousHome = process.env.DSH_HOME
 process.env.DSH_HOME = home
 const module = await import(`./index.js?host-test=${Date.now()}`)
-const { createBranch, readTree, buildTree, ownUsage, ownCounts, cleanupWorkspaceSession, reconcileWorkspaceRegistry, retireUnownedBranch, nextBranchOrdinal, redactSecrets, summaryPrompt, sameSiteRequest } = module.__test
+const { createBranch, readTree, readForest, buildTree, buildForest, ownUsage, ownCounts, cleanupWorkspaceSession, reconcileWorkspaceRegistry, retireUnownedBranch, nextBranchOrdinal, redactSecrets, summaryPrompt, sameSiteRequest } = module.__test
 
 after(async () => {
   if (previousHome === undefined) delete process.env.DSH_HOME
@@ -307,6 +307,162 @@ test('readTree returns the connected tree around a branch', async () => {  const
   assert.equal(tree.nodes[1].parentId, 'r')
 })
 
+function edge(childId, parentId, createdAt = 1) {
+  return {
+    childId,
+    parentId,
+    atSeq: 3,
+    turn: 1,
+    snippet: `${childId} 的分支点`,
+    title: `${parentId} · 分支`,
+    createdAt,
+  }
+}
+
+test('buildForest groups requested sessions into whole components', () => {
+  const known = {
+    version: 1,
+    pending: [],
+    edges: [
+      edge('b', 'a', 1),
+      edge('c', 'a', 2),
+      edge('d', 'b', 3),
+      edge('e', 'e2', 4),
+    ],
+  }
+  const forest = buildForest(known, ['b', 'e'])
+  assert.equal(forest.version, 2)
+  assert.equal(forest.conversationCount, 2)
+  assert.equal(forest.branchCount, 4)
+  assert.deepEqual(forest.components.map((component) => component.rootId), ['a', 'e2'])
+  // Requesting one branch still returns its siblings and descendants: the card
+  // must show the lineage, not only the requested node.
+  assert.deepEqual(forest.components[0].nodes.map((node) => node.id), ['a', 'b', 'c', 'd'])
+  assert.deepEqual(forest.components[0].nodes.map((node) => node.depth), [0, 1, 1, 2])
+  assert.equal(forest.components[0].nodes[0].childCount, 2)
+  assert.deepEqual(forest.components[1].nodes.map((node) => node.id), ['e2', 'e'])
+})
+
+test('buildForest keeps a parent outside the workspace as the component root', () => {
+  const known = { version: 1, pending: [], edges: [edge('branch', 'outside-root')] }
+  const forest = buildForest(known, ['branch'])
+  assert.equal(forest.components.length, 1)
+  assert.equal(forest.components[0].rootId, 'outside-root')
+  assert.deepEqual(forest.components[0].nodes.map((node) => node.id), ['outside-root', 'branch'])
+})
+
+test('buildForest keeps unrelated workspace conversations as single nodes', () => {
+  const known = { version: 1, pending: [], edges: [edge('b', 'a')] }
+  const forest = buildForest(known, ['a', 'solo'])
+  assert.deepEqual(forest.components.map((component) => component.rootId), ['a', 'solo'])
+  const solo = forest.components.find((component) => component.rootId === 'solo')
+  assert.equal(solo.nodes.length, 1)
+  assert.equal(solo.nodes[0].parentId, null)
+  assert.equal(forest.conversationCount, 2)
+  assert.equal(forest.branchCount, 1)
+})
+
+test('buildForest refuses a cycle instead of looping forever', () => {
+  const known = { version: 1, pending: [], edges: [edge('a', 'b'), edge('b', 'a')] }
+  assert.throws(() => buildForest(known, ['a']), /conversation-tree-cycle/)
+})
+
+test('readForest returns the component around a fresh branch and validates its body', async () => {
+  const { ctx } = fakeContext()
+  const created = await (await createBranch(ctx, request({ parentSessionId: 'r', atSeq: 3 }))).json()
+  const response = await readForest(ctx, request({ sessionIds: ['r', created.sessionId, 'solo'] }))
+  const forest = await response.json()
+  assert.equal(response.status, 200)
+  assert.equal(forest.version, 2)
+  assert.equal(forest.conversationCount, 2)
+  assert.equal(forest.components[0].rootId, 'r')
+  assert.equal(forest.components[0].nodes.length, 2)
+  assert.equal(forest.components[1].rootId, 'solo')
+  assert.equal(forest.components[0].nodes[1].pending, false)
+
+  assert.equal((await readForest(ctx, request({ sessionIds: [] }))).status, 400)
+  assert.equal((await readForest(ctx, request({ sessionIds: 'r' }))).status, 400)
+  assert.equal((await readForest(ctx, request({ sessionIds: [''] }))).status, 400)
+  const tooMany = Array.from({ length: 501 }, (_, index) => `s${index}`)
+  assert.equal((await readForest(ctx, request({ sessionIds: tooMany }))).status, 400)
+  const crossOrigin = {
+    json: async () => ({ sessionIds: ['r'] }),
+    url: 'http://127.0.0.1:3080/api/conversation-tree/forest',
+    headers: { get: (name) => (name === 'origin' ? 'https://evil.example' : null) },
+  }
+  assert.equal((await readForest(ctx, crossOrigin)).status, 403)
+})
+
+test('readForest fills each node with its own usage when stats are requested', async () => {
+  const registry = { version: 1, pending: [], edges: [edge('stats-child', 'stats-root')] }
+  await writeFile(join(home, 'conversation-tree.json'), JSON.stringify(registry), 'utf8')
+  const readEvents = [
+    { seq: 0, type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: 'hi' }] } },
+    {
+      seq: 2,
+      type: 'assistant/message',
+      data: {
+        turn: 1,
+        step: 1,
+        message: { content: [{ type: 'text', text: 'hello' }] },
+        usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, cacheWriteTokens: 0 },
+      },
+    },
+    { seq: 3, type: 'turn/end', data: { turn: 1 } },
+  ]
+  const { ctx } = fakeContext()
+  const baseGet = ctx.get.bind(ctx)
+  ctx.get = (name) => (name === 'sessionPersistence'
+    ? {
+      open: async () => ({
+        read: async () => ({ events: readEvents }),
+        inheritedEventCount: 0,
+        close: async () => {},
+      }),
+    }
+    : baseGet(name))
+  const response = await readForest(ctx, request({ sessionIds: ['stats-root', 'stats-child'], stats: true }))
+  const forest = await response.json()
+  assert.equal(response.status, 200)
+  const nodes = forest.components.flatMap((component) => component.nodes)
+  assert.equal(nodes.length, 2)
+  for (const node of nodes) {
+    assert.equal(node.statsAvailable, true)
+    assert.deepEqual(node.usage, {
+      uncachedInputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 2,
+      cacheWriteTokens: 0,
+    })
+    assert.equal(node.turns, 1)
+    assert.equal(node.steps, 0)
+  }
+})
+
+test('apply registers the forest route beside the existing four', () => {
+  const paths = []
+  const ctx = {
+    connection: {
+      fetch: {
+        register(options) {
+          paths.push(`${options.methods.join(',')} ${options.path}`)
+          return () => {}
+        },
+      },
+    },
+    effect(callback) { return callback() },
+    get() { return undefined },
+    agents: { get() { return undefined } },
+    sessions: { get() { return undefined } },
+  }
+  module.apply(ctx)
+  assert.equal(paths.length, 5)
+  assert.ok(paths.includes('POST /api/conversation-tree/forest'))
+  assert.ok(paths.includes('POST /api/conversation-tree/branch'))
+  assert.ok(paths.includes('GET /api/conversation-tree/tree'))
+})
+
 test('nextBranchOrdinal takes the highest used sibling number', () => {
   assert.equal(nextBranchOrdinal([]), 1)
   assert.equal(nextBranchOrdinal([{ title: '对话 · 分支' }]), 2)
@@ -343,12 +499,39 @@ test('summaryPrompt fences the source record as data', () => {
   assert.match(prompt, /只保留最近/)
 })
 
-test('sameSiteRequest accepts same-origin and refuses a foreign origin', () => {
-  const make = (origin) => ({
-    url: 'http://127.0.0.1:3080/api/conversation-tree/delete',
-    headers: { get: (name) => (name === 'origin' ? origin : null) },
+test('sameSiteRequest compares Origin with Host, not the synthetic request URL', () => {
+  const make = (origin, host = '127.0.0.1:3080') => ({
+    // Connection hands routes a Fetch Request built on this synthetic base.
+    url: 'http://dsh.internal/api/conversation-tree/forest',
+    headers: {
+      get: (name) => {
+        if (name === 'origin') return origin
+        if (name === 'host') return host
+        return null
+      },
+    },
   })
   assert.equal(sameSiteRequest(make(undefined)), true)
   assert.equal(sameSiteRequest(make('http://127.0.0.1:3080')), true)
-  assert.equal(sameSiteRequest(make('https://evil.example')), false)
+  assert.equal(sameSiteRequest(make('http://127.0.0.1')), false)
+  assert.equal(sameSiteRequest(make('http://localhost:3080')), false)
+  assert.equal(sameSiteRequest(make('http://127.0.0.1:3080', '127.0.0.1:3080')), true)
+  assert.equal(sameSiteRequest(make('http://127.0.0.1', '127.0.0.1:80')), true)
+  assert.equal(sameSiteRequest(make('http://127.0.0.1:80', '127.0.0.1')), true)
+  assert.equal(sameSiteRequest(make('http://[::1]:3080', '[::1]:3080')), true)
+  assert.equal(sameSiteRequest(make('https://evil.example', '127.0.0.1:3080')), false)
+  assert.equal(sameSiteRequest(make('null')), false)
+  assert.equal(sameSiteRequest(make('http://127.0.0.1:3080', '')), false)
+  const crossSite = {
+    url: 'http://dsh.internal/api/conversation-tree/forest',
+    headers: {
+      get: (name) => {
+        if (name === 'sec-fetch-site') return 'cross-site'
+        if (name === 'origin') return 'http://127.0.0.1:3080'
+        if (name === 'host') return '127.0.0.1:3080'
+        return null
+      },
+    },
+  }
+  assert.equal(sameSiteRequest(crossSite), false)
 })

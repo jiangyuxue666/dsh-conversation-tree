@@ -95,9 +95,16 @@ const {
   formatCompact,
   tokenStatsOf,
   modelStatsOf,
+  componentTree,
+  workspaceView,
+  forestSessionIds,
+  forestModels,
+  layoutPanels,
+  treeForNode,
   TreeView,
   TreeHeader,
   TreeCanvas,
+  TreePanel,
   GraphNode,
   NodeInspector,
   TreeDockAction,
@@ -378,20 +385,233 @@ test('full tree, target picker, and confirm dialog render with live data', async
   })))
 })
 
+const forestSolo = node('solo', null, { atSeq: null, turn: null, snippet: '', title: '' })
+const forestBranch = node('n1', 'solo', { title: '分支甲' })
+const forestOld = node('old', null, { atSeq: null, turn: null, snippet: '', title: '' })
+const forest = {
+  version: 2,
+  components: [
+    { rootId: 'r', nodes: tree.nodes.map((entry) => ({ ...entry })) },
+    { rootId: 'solo', nodes: [forestSolo, forestBranch] },
+    { rootId: 'old', nodes: [forestOld] },
+  ],
+  conversationCount: 3,
+  branchCount: 4,
+}
+
+const forestSessions = {
+  byId: {
+    ...sessions.byId,
+    solo: { id: 'solo', title: '单独对话', displayTitle: '单独对话', running: false, updatedAt: 5_000 },
+    n1: { id: 'n1', title: '分支甲', displayTitle: '分支甲', running: false, updatedAt: 6_000 },
+    old: { id: 'old', title: '旧对话', displayTitle: '旧对话', running: false, updatedAt: 700 },
+  },
+}
+
+test('componentTree turns one forest component into the graph tree shape', () => {
+  const shape = componentTree({ rootId: 'r', nodes: tree.nodes }, 'c')
+  assert.equal(shape.rootId, 'r')
+  assert.equal(shape.currentId, 'c')
+  assert.equal(shape.branchCount, 3)
+  assert.equal(shape.nodes.length, 4)
+  assert.equal(componentTree({ rootId: 'r', nodes: tree.nodes }, 'missing').currentId, 'r')
+  assert.equal(componentTree({ rootId: 'r', nodes: tree.nodes }).currentId, 'r')
+})
+
+test('workspaceView resolves the owning workspace and falls back to one session', () => {
+  const view = workspaceView({
+    items: [{ workspaceId: 'w1', title: '工作区 A', sessionIds: ['b', 'x', 'b'] }],
+  }, 'b')
+  assert.equal(view.key, 'w1')
+  assert.equal(view.title, '工作区 A')
+  assert.deepEqual(view.sessionIds, ['b', 'x'])
+
+  const fallback = workspaceView({ archivedSessionIds: [] }, 'b')
+  assert.equal(fallback.key, 'session:b')
+  assert.deepEqual(fallback.sessionIds, ['b'])
+})
+
+test('forestSessionIds pins the current session and caps one request', () => {
+  assert.deepEqual(forestSessionIds(['a', 'b', 'a'], sessions, 'b'), ['b', 'a'])
+  assert.deepEqual(forestSessionIds(['a', 'b'], sessions, 'outside'), ['b', 'a'])
+  const many = Array.from({ length: 305 }, (_, index) => `s${index}`)
+  const capped = forestSessionIds(many, sessions, 's304')
+  assert.equal(capped.length, 300)
+  assert.equal(capped[0], 's304')
+  assert.equal(new Set(capped).size, 300)
+})
+
+test('forestModels lists every workspace conversation, with the current one first', () => {
+  const projection = forestModels(forest, {
+    sessions: forestSessions,
+    archived: new Set(['old']),
+    showArchived: false,
+    query: '',
+    currentSessionId: 'b',
+  })
+  assert.equal(projection.conversationCount, 2)
+  assert.equal(projection.branchCount, 4)
+  assert.equal(projection.hasArchived, true)
+  assert.deepEqual(projection.models.map((model) => model.id), ['r', 'solo'])
+  assert.equal(projection.models[0].current, true)
+  assert.equal(projection.models[0].branchCount, 3)
+  assert.equal(projection.models[0].tree.currentId, 'b')
+  // The newest conversation is not first; the one being read is.
+  assert.equal(projection.models[1].updatedAt, 6_000)
+})
+
+test('forestModels hides archived roots until asked', () => {
+  const shown = forestModels(forest, {
+    sessions: forestSessions,
+    archived: new Set(['old']),
+    showArchived: true,
+    currentSessionId: 'b',
+  })
+  assert.equal(shown.conversationCount, 3)
+  assert.equal(shown.models.some((model) => model.id === 'old'), true)
+})
+
+function forestItems(archived = new Set(['old'])) {
+  const projection = forestModels(forest, { sessions: forestSessions, archived, currentSessionId: 'b' })
+  return projection.models.map((model) => ({
+    key: model.id,
+    model,
+    graph: buildGraph(model.tree, { sessions: forestSessions, archived }),
+  }))
+}
+
+test('layoutPanels packs every conversation on one canvas without overlap', () => {
+  const items = forestItems()
+  const layout = layoutPanels(items, { width: 1200, height: 900 })
+  assert.equal(layout.sections.length, 2)
+  for (const section of layout.sections) {
+    assert.ok(section.width >= 240)
+    assert.ok(section.x >= 0 && section.y >= 0)
+    assert.ok(section.x + section.width <= layout.bounds.width + 0.001)
+    assert.ok(section.y + section.height <= layout.bounds.height + 0.001)
+  }
+  const [first, second] = layout.sections
+  const overlap = first.x < second.x + second.width && second.x < first.x + first.width
+    && first.y < second.y + second.height && second.y < first.y + first.height
+  assert.equal(overlap, false)
+
+  const collapsed = layoutPanels(items, { width: 1200, height: 900 }, new Set(['r']))
+  const folded = collapsed.sections.find((section) => section.key === 'r')
+  assert.equal(folded.collapsed, true)
+  assert.equal(folded.height, 34)
+  assert.ok(folded.width <= 360)
+})
+
+test('layoutPanels adds a column only when that makes the Workspace readable', () => {
+  const item = (key, height = 900) => ({
+    key,
+    model: { id: key, title: key, branchCount: 0, current: false, rootArchived: false, running: false, updatedAt: null },
+    graph: { bounds: { width: 480, height }, nodes: [], edges: [], byId: new Map(), current: null },
+  })
+  const wide = layoutPanels([item('a'), item('b'), item('c'), item('d')], { width: 1000, height: 640 })
+  assert.equal(wide.sections.length, 4)
+  assert.ok(new Set(wide.sections.map((section) => section.x)).size > 1)
+
+  const short = layoutPanels([item('a', 200), item('b', 200)], { width: 1000, height: 640 })
+  assert.equal(new Set(short.sections.map((section) => section.x)).size, 1)
+})
+
+test('treeForNode finds a component in either a forest or a loaded tree', () => {
+  const fromForest = treeForNode({ trees: {}, forests: { w1: forest } }, 'n1')
+  assert.equal(fromForest.rootId, 'solo')
+  assert.equal(fromForest.nodes.length, 2)
+  const fromTree = treeForNode({ trees: { b: tree }, forests: {} }, 'a')
+  assert.equal(fromTree.rootId, 'r')
+  assert.equal(treeForNode({ trees: {}, forests: {} }, 'n1'), undefined)
+})
+
+test('workspace overview renders every conversation on one shared canvas', async () => {
+  const h = ReactStub.createElement
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    assert.ok(String(url).includes('/api/conversation-tree/forest'))
+    return { ok: true, json: async () => forest }
+  }
+  try {
+    const loaded = await store.loadForest('w1', ['b', 'solo', 'old'])
+    assert.equal(loaded.components.length, 3)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+  const workspaces = {
+    items: [{ workspaceId: 'w1', title: '工作区 A', sessionIds: ['r', 'solo', 'old'] }],
+    archivedSessionIds: ['old'],
+  }
+  const noop = () => {}
+  assert.doesNotThrow(() => render(h(TreeView, {
+    sessionId: 'b',
+    useSessions: () => forestSessions,
+    useWorkspaces: () => workspaces,
+    useSessionAccess: () => true,
+  })))
+
+  const layout = layoutPanels(forestItems(), { width: 1200, height: 900 })
+  const canvasProps = {
+    sections: layout.sections,
+    bounds: layout.bounds,
+    selectedId: 'b',
+    center: null,
+    onSelect: noop,
+    onOpen: noop,
+    onFocus: noop,
+    onEscape: noop,
+    onToggleCollapse: noop,
+    onTogglePanel: noop,
+  }
+  assert.doesNotThrow(() => render(h(TreeCanvas, canvasProps)))
+  assert.doesNotThrow(() => render(h(TreePanel, {
+    section: layout.sections[0],
+    selectedId: 'b',
+    onSelect: noop,
+    onOpen: noop,
+    onToggleCollapse: noop,
+    onTogglePanel: noop,
+  })))
+})
+
 test('tree UI components render without throwing', () => {
   const h = ReactStub.createElement
   const graph = buildGraph(tree, { sessions, archived: new Set(['c']) })
   const noop = () => {}
   assert.doesNotThrow(() => render(h(TreeHeader, {
-    graph,
+    counts: '3 条分支 · 4 个对话',
+    hasArchived: true,
     loading: false,
     onRefresh: noop,
   })))
   assert.doesNotThrow(() => render(h(TreeCanvas, {
-    graph,
+    sections: [{
+      key: 'r',
+      model: {
+        id: 'r',
+        tree,
+        title: '主对话',
+        branchCount: 3,
+        current: true,
+        rootArchived: false,
+        running: false,
+        updatedAt: 1_000,
+      },
+      graph,
+      collapsed: false,
+      x: 0,
+      y: 0,
+      width: graph.bounds.width,
+      height: 34 + graph.bounds.height,
+    }],
+    bounds: { width: graph.bounds.width, height: 34 + graph.bounds.height },
     selectedId: 'b',
     onSelect: noop,
     onOpen: noop,
+    onFocus: noop,
+    onEscape: noop,
+    onToggleCollapse: noop,
+    onTogglePanel: noop,
   })))
   assert.doesNotThrow(() => render(h(GraphNode, {
     entry: graph.byId.get('a'),

@@ -8,7 +8,9 @@
  *
  * The tree page is a vertical graph: the current path is tinted, every branch
  * point is labelled with its Turn and prompt excerpt, and every node can be
- * opened, brought back, archived, or deleted.
+ * opened, brought back, archived, or deleted. Every conversation of the
+ * Workspace owns one panel on that same canvas, so the whole Workspace is one
+ * surface to pan, zoom and search instead of one conversation at a time.
  */
 
 window.__ModuleLoader__.load({
@@ -20,14 +22,20 @@ window.__ModuleLoader__.load({
     const NS = 'dsh-conversation-tree'
     const BRANCH_ROUTE = '/api/conversation-tree/branch'
     const TREE_ROUTE = '/api/conversation-tree/tree'
+    const FOREST_ROUTE = '/api/conversation-tree/forest'
     const SUMMARY_ROUTE = '/api/conversation-tree/summarize'
     const DELETE_ROUTE = '/api/conversation-tree/delete'
     const STYLE_ID = 'dsh-conversation-tree/ui'
     const TOAST_MS = 4200
+    /** Workspace sessions one forest request names; the newest win. */
+    const MAX_FOREST_IDS = 300
+    /** Every conversation tree is a panel on the shared canvas. */
+    const PANEL_HEADER = 34
+    const PANEL_GAP = 36
+    const MAX_COLUMNS = 4
 
     const ZH = {
       'view.tree': '对话树',
-      'head.count': '{branches} 条分支 · {nodes} 个对话',
       'head.refresh': '刷新',
       'head.fit': '适应画布',
       'head.zoomIn': '放大',
@@ -77,11 +85,21 @@ window.__ModuleLoader__.load({
       'head.searchCount': '{count} 个匹配',
       'head.showArchived': '显示已归档',
       'head.hideArchived': '隐藏已归档',
+      'head.forestCount': '{conversations} 个对话 · {branches} 条分支',
+      'head.workspaceCount': '{workspace} · {conversations} 个对话 · {branches} 条分支',
+      'forest.empty': '这个工作区还没有对话',
+      'forest.noMatch': '没有匹配的对话',
+      'forest.archivedOnly': '对话都已归档，点右上角的归档按钮显示',
+      'forest.truncated': '对话太多，只显示最近的 {count} 个',
+      'panel.expand': '展开这棵对话树',
+      'panel.collapse': '收起这棵对话树',
+      'panel.collapsed': '已收起',
+      'panel.current': '当前对话',
+      'panel.branches': '{count} 个分支',
       'node.expand': '展开分支',
       'node.collapse': '折叠分支',
       'node.hiddenCount': '{count} 个分支已折叠',
       'node.untitled': '未命名分支',
-      'node.tokens': 'tok',
       'graph.hint': '方向键切换节点，回车打开，Esc 退出搜索',
       'dialog.close': '关闭',
       'inspector.tokens': 'tok',
@@ -169,12 +187,10 @@ window.__ModuleLoader__.load({
 
     const EN = {
       'view.tree': 'Tree',
-      'head.count': '{branches} branches · {nodes} conversations',
       'head.refresh': 'Refresh',
       'head.fit': 'Fit to canvas',
       'head.zoomIn': 'Zoom in',
       'head.zoomOut': 'Zoom out',
-      'head.zoomReset': 'Reset zoom',
       'graph.label': 'Conversation tree graph',
       'inspector.source': 'Source',
       'inspector.root': 'Root',
@@ -183,7 +199,6 @@ window.__ModuleLoader__.load({
       'inspector.level': 'Level',
       'inspector.branchPoint': 'Branch point',
       'inspector.usage': 'Own usage',
-      'inspector.total': 'Total',
       'inspector.uncached': 'Uncached input',
       'inspector.cacheRead': 'Cached input',
       'inspector.cacheWrite': 'Cache write',
@@ -213,30 +228,29 @@ window.__ModuleLoader__.load({
       'branch.action': 'Tree branch',
       'branch.creating': 'Creating…',
       'branch.hint': 'Create a branch that joins the conversation tree at this completed Turn',
-      'branch.created': 'Tree branch created',
-      'dock.label': 'Conversation tree',
-      'dock.root': 'Root · {count} branches',
-      'dock.branch': 'Branch at Turn {turn} · {count} branches',
-      'head.eyebrow': 'CONVERSATION TREE',
       'head.titleFallback': 'Conversation tree',
-      'head.subtitle': 'See the whole line from the root conversation to its deepest branch. Click any node to open it.',
-      'head.branchCount': '{count} branches',
-      'head.branchUnit': 'branches',
-      'head.level': 'level',
-      'head.currentDepth': 'Current · level {depth}',
       'head.showArchived': 'Show archived',
-      'head.enterChat': 'Open chat',
       'head.refresh': 'Refresh',
       'head.retry': 'Reload',
       'head.loading': 'Reading the conversation tree…',
       'head.search': 'Search titles or excerpts',
       'head.searchCount': '{count} matches',
       'head.hideArchived': 'Hide archived',
+      'head.forestCount': '{conversations} conversations · {branches} branches',
+      'head.workspaceCount': '{workspace} · {conversations} conversations · {branches} branches',
+      'forest.empty': 'This workspace has no conversations yet',
+      'forest.noMatch': 'No conversation matches',
+      'forest.archivedOnly': 'Every conversation is archived — use the archive button above',
+      'forest.truncated': 'Too many conversations; showing the most recent {count}',
+      'panel.expand': 'Expand this conversation tree',
+      'panel.collapse': 'Collapse this conversation tree',
+      'panel.collapsed': 'Collapsed',
+      'panel.current': 'Current',
+      'panel.branches': '{count} branches',
       'node.expand': 'Expand branch',
       'node.collapse': 'Collapse branch',
       'node.hiddenCount': '{count} branches collapsed',
       'node.untitled': 'Untitled branch',
-      'node.tokens': 'tok',
       'graph.hint': 'Arrow keys move, Enter opens, Escape clears the search',
       'dialog.close': 'Close',
       'inspector.tokens': 'tokens',
@@ -246,40 +260,19 @@ window.__ModuleLoader__.load({
       'target.send': 'Send',
       'target.back': 'Back',
       'target.truncated': 'The model cut the summary short; check it before sending.',
-      'head.errorTitle': 'The conversation tree could not be read',
-      'path.current': 'Current position',
-      'path.root': 'Root',
       'root.badge': 'Root',
-      'root.note': 'This tree starts here; every branch shares the same workspace.',
-      'node.current': 'Current',
       'node.archived': 'Archived',
       'node.pending': 'Registering',
       'node.running': 'Running',
-      'node.open': 'Open conversation',
-      'node.branchPoint': 'Branched after Turn {turn}',
-      'node.childCount': '{count} branches',
       'time.justNow': 'just now',
       'time.minutes': '{n} min ago',
       'time.hours': '{n} h ago',
       'time.yesterday': 'yesterday',
       'time.days': '{n} d ago',
-      'node.action.bring': 'Bring back…',
       'node.action.archive': 'Archive',
       'node.action.unarchive': 'Unarchive',
       'node.action.delete': 'Delete',
-      'node.action.open': 'Open',
       'node.archivedOpen': 'Archived conversations cannot be opened',
-      'empty.title': 'No branches here yet',
-      'empty.body': 'Below any completed message, choose 「Tree branch」. The branch inherits the context up to that moment and appears here.',
-      'empty.step1': 'Find the Turn to branch from',
-      'empty.step2': 'Choose 「Tree branch」 below the message',
-      'empty.step3': 'Open, bring back, or archive it here',
-      'empty.archivedTitle': 'All branches are archived',
-      'empty.archivedBody': 'Turn on 「Show archived」 to see them, or restore the branches you need.',
-      'legend.current': 'Current',
-      'legend.running': 'Running',
-      'legend.archived': 'Archived',
-      'legend.hint': 'Click a card to open it; branches and the root share one workspace.',
       'target.title': 'Bring back into which conversation?',
       'target.subtitle': 'Compress 「{source}」’s own discussion into a brief and queue it into the target. The source is kept.',
       'target.source': 'Source',
@@ -288,7 +281,6 @@ window.__ModuleLoader__.load({
       'target.cancel': 'Cancel',
       'target.confirm': 'Compress and bring back',
       'target.working': 'Compressing…',
-      'target.sending': 'Sending…',
       'notice.brought': 'Brought back into 「{target}」 ({chars} chars)',
       'notice.branchCreated': 'Tree branch created',
       'notice.archiving': 'Archiving {count} conversation(s)…',
@@ -296,7 +288,6 @@ window.__ModuleLoader__.load({
       'notice.archived': 'Archived {count} conversation(s)',
       'notice.deleted': 'Deleted {count} conversation(s)',
       'notice.unarchived': 'Unarchived',
-      'notice.refreshed': 'Conversation tree refreshed',
       'confirm.delete.title': 'Delete this subtree?',
       'confirm.delete.body': '「{title}」 and every branch below it will be permanently deleted. This cannot be undone.',
       'confirm.delete.leaf': '「{title}」 will be permanently deleted. This cannot be undone.',
@@ -408,13 +399,6 @@ window.__ModuleLoader__.load({
         h('path', { d: 'M19 4v3' }))
     }
 
-    function IconOpen({ size = 16, className }) {
-      return h(Svg, { size, className },
-        h('path', { d: 'M14 4h6v6' }),
-        h('path', { d: 'm20 4-8.5 8.5' }),
-        h('path', { d: 'M18 14.5V19a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4.5' }))
-    }
-
     function IconArchive({ size = 16, className }) {
       return h(Svg, { size, className },
         h('path', { d: 'M4 7.5h16' }),
@@ -494,6 +478,10 @@ window.__ModuleLoader__.load({
         trees: {},
         loading: {},
         errors: {},
+        forests: {},
+        forestLoading: {},
+        forestErrors: {},
+        forestEpoch: 0,
         dialog: null,
         toast: null,
         notices: {},
@@ -503,6 +491,7 @@ window.__ModuleLoader__.load({
       }
       const listeners = new Set()
       const inflight = new Map()
+      const inflightForest = new Map()
       const noticeTimers = new Map()
       // Every invalidation bumps the epoch; a response that started under an
       // older epoch must not write its tree back over a newer one.
@@ -573,8 +562,71 @@ window.__ModuleLoader__.load({
           inflight.set(requestKey, operation)
           return operation
         },
+        /**
+         * Read every tree that touches one Workspace's conversations.
+         *
+         * The Workspace membership is client knowledge, so the caller names the
+         * Sessions and this method reconciles one merged forest. Cached for the
+         * same short window as a single tree: a page switch back and forth must
+         * not re-read the registry every time.
+         */
+        async loadForest(key, sessionIds, options = {}) {
+          if (typeof key !== 'string' || key === '') return undefined
+          const ids = Array.isArray(sessionIds)
+            ? sessionIds.filter((id) => typeof id === 'string' && id !== '')
+            : []
+          if (ids.length === 0) return undefined
+          const includeStats = options.stats !== false
+          const signature = `${ids.length}:${ids.join('|')}`
+          if (options.force !== true) {
+            const cached = state.forests[key]
+            if (cached !== undefined && cached.signature === signature && cached.stats === includeStats
+              && Date.now() - cached.fetchedAt < 4000) return cached
+            const active = inflightForest.get(key)
+            if (active !== undefined) return active
+          }
+          const operation = (async () => {
+            const epoch = state.forestEpoch
+            set({
+              forestLoading: { ...state.forestLoading, [key]: true },
+              forestErrors: withoutKey(state.forestErrors, key),
+            })
+            try {
+              const data = await requestJson(FOREST_ROUTE, {
+                method: 'POST',
+                body: JSON.stringify({ sessionIds: ids, stats: includeStats }),
+              }, 120000)
+              if (epoch !== state.forestEpoch) {
+                set({ forestLoading: withoutKey(state.forestLoading, key) })
+                return undefined
+              }
+              const forest = { ...data, stats: includeStats, signature, fetchedAt: Date.now() }
+              set({
+                forests: { ...state.forests, [key]: forest },
+                forestLoading: withoutKey(state.forestLoading, key),
+                forestErrors: withoutKey(state.forestErrors, key),
+              })
+              return forest
+            } catch (error) {
+              if (epoch === state.forestEpoch) {
+                set({
+                  forestLoading: withoutKey(state.forestLoading, key),
+                  forestErrors: { ...state.forestErrors, [key]: friendlyError(error) },
+                })
+              }
+              return undefined
+            } finally {
+              inflightForest.delete(key)
+            }
+          })()
+          inflightForest.set(key, operation)
+          return operation
+        },
         invalidateTrees(sessionIds) {
           treeEpoch += 1
+          // A forest is a view over the same edges; every mutation invalidates
+          // all of them, because a deletion can remove a node from a tree the
+          // caller did not name.
           if (Array.isArray(sessionIds)) {
             const trees = { ...state.trees }
             const errors = { ...state.errors }
@@ -582,10 +634,24 @@ window.__ModuleLoader__.load({
               delete trees[id]
               delete errors[id]
             }
-            set({ trees, errors })
+            set({
+              trees,
+              errors,
+              forests: {},
+              forestLoading: {},
+              forestErrors: {},
+              forestEpoch: state.forestEpoch + 1,
+            })
             return
           }
-          set({ trees: {}, errors: {} })
+          set({
+            trees: {},
+            errors: {},
+            forests: {},
+            forestLoading: {},
+            forestErrors: {},
+            forestEpoch: state.forestEpoch + 1,
+          })
         },
         toast(kind, text) {
           state.toastSeq += 1
@@ -899,6 +965,155 @@ window.__ModuleLoader__.load({
       return model
     }
 
+    /**
+     * Turn one forest component into the tree shape the existing graph and
+     * inspector consume. The current conversation only colors a path when it
+     * belongs to this component; otherwise the root is the sensible anchor.
+     */
+    function componentTree(component, preferredCurrentId) {
+      const nodes = Array.isArray(component?.nodes) ? component.nodes : []
+      const rootId = typeof component?.rootId === 'string'
+        ? component.rootId
+        : (nodes.find((node) => node?.parentId === null)?.id ?? '')
+      const hasPreferred = nodes.some((node) => node?.id === preferredCurrentId)
+      return {
+        version: 2,
+        rootId,
+        currentId: hasPreferred ? preferredCurrentId : rootId,
+        branchCount: Math.max(0, nodes.length - 1),
+        nodes,
+      }
+    }
+
+    /** The Workspace that owns one session, or a one-session fallback. */
+    function workspaceView(workspaces, sessionId) {
+      const items = Array.isArray(workspaces?.items) ? workspaces.items : []
+      const found = items.find((item) => Array.isArray(item?.sessionIds) && item.sessionIds.includes(sessionId))
+      if (found !== undefined) {
+        const sessionIds = []
+        const seen = new Set()
+        for (const id of found.sessionIds) {
+          if (typeof id !== 'string' || id === '' || seen.has(id)) continue
+          seen.add(id)
+          sessionIds.push(id)
+        }
+        return {
+          key: typeof found.workspaceId === 'string' && found.workspaceId !== '' ? found.workspaceId : `workspace:${sessionId}`,
+          title: typeof found.title === 'string' ? found.title : '',
+          sessionIds,
+        }
+      }
+      return { key: `session:${sessionId}`, title: '', sessionIds: [sessionId] }
+    }
+
+    /**
+     * The Sessions one forest request names.
+     *
+     * Recency order makes the 300-session ceiling keep the conversations a user
+     * is likely to want; the current conversation is pinned first so it can
+     * never be the one dropped. The order is stable while no conversation
+     * changes its activity, so a token counter ticking does not refetch.
+     */
+    function forestSessionIds(sessionIds, sessions, currentSessionId) {
+      const stampOf = (id) => {
+        const session = sessionOf(sessions, id)
+        return Number.isFinite(session?.updatedAt) ? session.updatedAt : 0
+      }
+      const seen = new Set()
+      const unique = []
+      for (const id of sessionIds) {
+        if (typeof id !== 'string' || id === '' || seen.has(id)) continue
+        seen.add(id)
+        unique.push(id)
+      }
+      unique.sort((a, b) => {
+        if (a === currentSessionId) return -1
+        if (b === currentSessionId) return 1
+        return stampOf(b) - stampOf(a) || a.localeCompare(b)
+      })
+      return unique.slice(0, MAX_FOREST_IDS)
+    }
+
+    /**
+     * Project every component of one forest into a panel model.
+     *
+     * The Workspace view is not a tree request: it draws every conversation of
+     * the Workspace, including the ones that never branched (single-node
+     * components). Archived roots leave the default view and archived branches
+     * are hidden by flattenTree. Search does not remove panels: the graph dims
+     * every node that does not match instead, so typing never reshuffles the
+     * canvas under the pointer.
+     */
+    function forestModels(forest, options) {
+      const sessions = options?.sessions
+      const archived = options?.archived instanceof Set ? options.archived : new Set()
+      const showArchived = options?.showArchived === true
+      const currentSessionId = typeof options?.currentSessionId === 'string' ? options.currentSessionId : ''
+      const components = Array.isArray(forest?.components) ? forest.components : []
+      const hasArchived = components.some((component) => (
+        Array.isArray(component?.nodes) && component.nodes.some((node) => archived.has(node.id))
+      ))
+      const models = []
+      for (const component of components) {
+        const nodes = Array.isArray(component?.nodes) ? component.nodes : []
+        if (nodes.length === 0) continue
+        const rootId = typeof component?.rootId === 'string' ? component.rootId : ''
+        if (rootId === '') continue
+        if (!showArchived && archived.has(rootId)) continue
+        const tree = componentTree(component, currentSessionId)
+        const model = flattenTree(tree, { sessions, archived, showArchived })
+        if (model === null) continue
+        const visibleNodes = [model.root.node, ...model.rows.map((row) => row.node)]
+        const updatedAt = visibleNodes.reduce((latest, node) => {
+          const session = sessionOf(sessions, node.id)
+          const stamp = Number.isFinite(session?.updatedAt) ? session.updatedAt : node.createdAt
+          return Number.isFinite(stamp) ? Math.max(latest, stamp) : latest
+        }, 0)
+        models.push({
+          id: rootId,
+          tree,
+          root: model.root,
+          rows: model.rows,
+          title: model.root.title,
+          branchCount: model.rows.length,
+          current: visibleNodes.some((node) => node.id === currentSessionId),
+          running: visibleNodes.some((node) => sessionOf(sessions, node.id)?.running === true),
+          rootArchived: archived.has(rootId),
+          updatedAt: updatedAt > 0 ? updatedAt : null,
+        })
+      }
+      models.sort((a, b) => {
+        if (a.current !== b.current) return a.current ? -1 : 1
+        return (b.updatedAt ?? 0) - (a.updatedAt ?? 0) || a.title.localeCompare(b.title)
+      })
+      return {
+        models,
+        conversationCount: models.length,
+        branchCount: models.reduce((total, model) => total + model.branchCount, 0),
+        hasArchived,
+      }
+    }
+
+    /**
+     * The component tree that contains one node, whether it came from a single
+     * tree load or from a Workspace forest. Dialogs use this so bring-back and
+     * archive/delete keep working no matter which card opened them.
+     */
+    function treeForNode(state, nodeId) {
+      if (typeof nodeId !== 'string' || nodeId === '') return undefined
+      for (const tree of Object.values(state?.trees ?? {})) {
+        if (Array.isArray(tree?.nodes) && tree.nodes.some((node) => node?.id === nodeId)) return tree
+      }
+      for (const forest of Object.values(state?.forests ?? {})) {
+        for (const component of forest?.components ?? []) {
+          if (Array.isArray(component?.nodes) && component.nodes.some((node) => node?.id === nodeId)) {
+            return componentTree(component, forest?.currentId)
+          }
+        }
+      }
+      return undefined
+    }
+
     /** Every raw node in one node's subtree, including itself. */
     function subtreeOf(tree, nodeId) {
       if (!tree || !Array.isArray(tree.nodes)) return []
@@ -967,7 +1182,7 @@ window.__ModuleLoader__.load({
       if (ui !== undefined && typeof ui.openSession === 'function') ui.openSession(sessionId)
     }
 
-    async function navigateOutside(tree, ids, currentSessionId) {
+    async function navigateOutside(tree, ids, currentSessionId, fallbackSessionId = null) {
       if (!ids.has(currentSessionId)) return false
       let node = findNode(tree, currentSessionId)
       let target = node?.parentId ?? null
@@ -979,6 +1194,13 @@ window.__ModuleLoader__.load({
       }
       if (target === null || ids.has(target)) {
         target = tree.nodes.find((candidate) => !ids.has(candidate.id))?.id ?? null
+      }
+      // The whole component can be gone (or the caller is looking at another
+      // conversation's tree), so the page hands over a surviving card to land on.
+      if ((target === null || ids.has(target))
+        && typeof fallbackSessionId === 'string' && fallbackSessionId !== ''
+        && !ids.has(fallbackSessionId)) {
+        target = fallbackSessionId
       }
       if (target === null) throw new Error(t('error.unknown'))
       openSession(target)
@@ -994,7 +1216,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    async function runDelete(tree, nodeId, currentSessionId) {
+    async function runDelete(tree, nodeId, currentSessionId, fallbackSessionId = null) {
       const subtree = subtreeOf(tree, nodeId)
       const ids = new Set(subtree.map((node) => node.id))
       store.setNotice(currentSessionId, {
@@ -1002,7 +1224,7 @@ window.__ModuleLoader__.load({
         text: t('notice.deleting', { count: ids.size }),
       })
       try {
-        await navigateOutside(tree, ids, currentSessionId)
+        await navigateOutside(tree, ids, currentSessionId, fallbackSessionId)
         const body = await requestJson(DELETE_ROUTE, {
           method: 'POST',
           body: JSON.stringify({ sessionId: nodeId }),
@@ -1024,7 +1246,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    async function runArchive(tree, nodeId, currentSessionId) {
+    async function runArchive(tree, nodeId, currentSessionId, fallbackSessionId = null) {
       const subtree = subtreeOf(tree, nodeId)
       const ids = new Set(subtree.map((node) => node.id))
       store.setNotice(currentSessionId, {
@@ -1032,7 +1254,7 @@ window.__ModuleLoader__.load({
         text: t('notice.archiving', { count: subtree.length }),
       })
       try {
-        await navigateOutside(tree, ids, currentSessionId)
+        await navigateOutside(tree, ids, currentSessionId, fallbackSessionId)
         const ui = app?.get?.('uiWorkspace')
         if (ui === undefined || typeof ui.archiveSession !== 'function') throw new Error(t('error.unknown'))
         for (const node of [...subtree].reverse()) {
@@ -1057,7 +1279,7 @@ window.__ModuleLoader__.load({
     async function runUnarchive(nodeId, currentSessionId) {
       const ui = app?.get?.('uiWorkspace')
       if (ui === undefined || typeof ui.unarchiveSession !== 'function') throw new Error(t('error.unknown'))
-      const tree = store.get().trees[currentSessionId]
+      const tree = treeForNode(store.get(), nodeId)
       const nodes = tree === undefined ? [{ id: nodeId }] : subtreeOf(tree, nodeId)
       for (const node of [...nodes].reverse()) {
         await ui.unarchiveSession(node.id)
@@ -1389,172 +1611,19 @@ window.__ModuleLoader__.load({
       return compact
     }
 
-    function TreeView({ sessionId, useSessions, useWorkspaces, useSessionAccess, openView }) {
-      const state = useStore()
-      const sessions = useSessions((value) => value)
-      const workspaces = useWorkspaces((value) => value)
-      const [selectedId, setSelectedId] = React.useState(null)
-      const [query, setQuery] = React.useState('')
-      const [showArchived, setShowArchived] = React.useState(false)
-      const [collapsed, setCollapsed] = React.useState(() => new Set())
-      const [center, setCenter] = React.useState(null)
-      const centerSeq = React.useRef(0)
-      const compact = useCompactLayout()
-      const tree = state.trees[sessionId]
-      const loading = state.loading[sessionId] === true
-      const error = state.errors[sessionId]
-      const notice = state.notices[sessionId]
-      const archived = React.useMemo(() => archivedSetOf(workspaces), [workspaces])
-      const graph = React.useMemo(
-        () => buildGraph(tree, { sessions, archived, compact, showArchived, collapsed, query }),
-        [tree, sessions, archived, compact, showArchived, collapsed, query],
-      )
-      const graphRef = React.useRef(graph)
-      graphRef.current = graph
-
-      const focusNode = React.useCallback((id) => {
-        if (typeof id !== 'string' || id === '') return
-        centerSeq.current += 1
-        setSelectedId(id)
-        setCenter({ id, seq: centerSeq.current })
-      }, [])
-
-      React.useEffect(() => {
-        void store.loadTree(sessionId, false, true)
-        const pendingSince = pendingChatSwitch.get(sessionId)
-        if (pendingSince === undefined) return
-        pendingChatSwitch.delete(sessionId)
-        if (Date.now() - pendingSince > 3000) return
-        if (typeof openView === 'function') openView('chat', 'conversation-tree')
-      }, [sessionId])
-
-      React.useEffect(() => {
-        if (graph === null) return
-        if (selectedId !== null && graph.byId.has(selectedId)) return
-        setSelectedId(graph.current.id)
-      }, [graph, selectedId])
-
-      // A search that matches something moves the canvas to the first hit, so a
-      // deep tree cannot leave the answer outside the viewport.
-      React.useEffect(() => {
-        const current = graphRef.current
-        if (current === null || query.trim() === '') return
-        const hit = current.nodes.find((entry) => entry.matches)
-        if (hit !== undefined) focusNode(hit.id)
-      }, [query, focusNode])
-
-      async function refresh() {
-        const next = await store.loadTree(sessionId, true, true)
-        if (next === undefined) {
-          const failure = store.get().errors[sessionId]
-          if (failure !== undefined) store.toast('error', failure)
-        }
-      }
-
-      function bringBack(sourceId) {
-        store.openDialog({
-          kind: 'target',
-          sessionId,
-          sourceId,
-          rootId: tree?.rootId,
-        })
-      }
-
-      function toggleCollapse(nodeId) {
-        setCollapsed((current) => {
-          const next = new Set(current)
-          if (next.has(nodeId)) next.delete(nodeId)
-          else next.add(nodeId)
-          return next
-        })
-      }
-
-      function requestArchive(nodeId) {
-        const subtree = subtreeOf(tree, nodeId)
-        const entry = graphRef.current?.byId.get(nodeId)
-        // Archiving a running conversation stops its activity, so a leaf needs
-        // the same confirmation a subtree already gets.
-        if (subtree.length > 1 || (entry !== undefined && entry.running)) {
-          store.openDialog({ kind: 'confirm', action: 'archive', sessionId, nodeId })
-          return
-        }
-        void runArchive(tree, nodeId, sessionId).catch((failure) => store.toast('error', friendlyError(failure)))
-      }
-
-      function requestDelete(nodeId) {
-        store.openDialog({ kind: 'confirm', action: 'delete', sessionId, nodeId })
-      }
-
-      function openNode(entry) {
-        const target = entry?.node ?? entry
-        if (entry?.archived === true || target?.archived === true) {
-          store.toast('info', t('node.archivedOpen'))
-          return
-        }
-        if (target?.id === sessionId) {
-          if (typeof openView === 'function') openView('chat', 'conversation-tree')
-          return
-        }
-        openSession(target?.id, { forceChat: true })
-      }
-
-      if (error !== undefined && tree === undefined) {
-        return h('section', { className: 'ct-page' },
-          h(TreeHeader, { graph: null, loading, notice, onRefresh: refresh, query: '', onQuery: () => {} }),
-          h('div', { className: 'ct-state' },
-            h('p', null, error),
-            h('button', { type: 'button', className: 'ct-btn', onClick: refresh }, t('head.retry'))))
-      }
-
-      if (tree === undefined || graph === null) return h(TreeSkeleton)
-
-      const selected = selectedId === null
-        ? graph.current
-        : graph.byId.get(selectedId) ?? graph.current
-
-      return h('section', { className: 'ct-page' },
-        h(TreeHeader, {
-          graph,
-          loading,
-          notice,
-          onRefresh: refresh,
-          query,
-          onQuery: setQuery,
-          showArchived,
-          onToggleArchived: () => setShowArchived((value) => !value),
-        }),
-        h('div', { className: 'ct-body' },
-          h(TreeCanvas, {
-            graph,
-            selectedId: selected.id,
-            center,
-            onSelect: setSelectedId,
-            onOpen: openNode,
-            onFocus: focusNode,
-            onEscape: () => setQuery(''),
-            onToggleCollapse: toggleCollapse,
-          }),
-          h(NodeInspector, {
-            entry: selected,
-            graph,
-            onSelect: setSelectedId,
-            onOpen: openNode,
-            onBring: bringBack,
-            onArchive: requestArchive,
-            onDelete: requestDelete,
-            onUnarchive: (nodeId) => {
-              void runUnarchive(nodeId, sessionId).catch((failure) => store.toast('error', friendlyError(failure)))
-            },
-            useSessionAccess,
-          })))
-    }
-
-    function TreeHeader({ graph, loading, notice, onRefresh, query = '', onQuery, showArchived = false, onToggleArchived }) {
-      const count = graph === null
-        ? ''
-        : t('head.count', { branches: graph.branchCount, nodes: graph.nodes.length })
-      const status = notice?.text ?? count
-      const matched = graph === null || graph.query === '' ? null : graph.matchedCount
+    function TreeHeader({
+      counts = '',
+      matched = null,
+      hasArchived = false,
+      loading,
+      notice,
+      onRefresh,
+      query = '',
+      onQuery,
+      showArchived = false,
+      onToggleArchived,
+    }) {
+      const status = notice?.text ?? counts
       return h('header', { className: 'ct-top' },
         h('div', { className: 'ct-top-title' },
           h('h1', { className: 'ct-h1' }, t('view.tree')),
@@ -1589,7 +1658,7 @@ window.__ModuleLoader__.load({
                 ? null
                 : h('span', { className: 'ct-search-count' }, t('head.searchCount', { count: matched })))
             : null,
-          graph !== null && graph.hasArchived && typeof onToggleArchived === 'function'
+          hasArchived && typeof onToggleArchived === 'function'
             ? h('button', {
               type: 'button',
               className: 'ct-icon-btn',
@@ -1608,7 +1677,26 @@ window.__ModuleLoader__.load({
           }, loading ? h(Spinner, { size: 14 }) : h(IconRefresh, { size: 15 }))))
     }
 
-    function TreeCanvas({ graph, selectedId, center, onSelect, onOpen, onFocus, onEscape, onToggleCollapse }) {
+    /**
+     * One canvas for every conversation tree of the Workspace.
+     *
+     * A panel is the single-tree graph plus a header. All panels share one
+     * coordinate space, so panning, zooming, fitting, keyboard navigation and
+     * search work across the whole Workspace instead of per conversation.
+     */
+    function TreeCanvas({
+      sections,
+      bounds,
+      compact = false,
+      selectedId,
+      center,
+      onSelect,
+      onOpen,
+      onFocus,
+      onEscape,
+      onToggleCollapse,
+      onTogglePanel,
+    }) {
       const viewportRef = React.useRef(null)
       const [view, setView] = React.useState({ x: 0, y: 0, scale: 1 })
       const [dragging, setDragging] = React.useState(false)
@@ -1619,26 +1707,33 @@ window.__ModuleLoader__.load({
       const pointers = React.useRef(new Map())
       const pinch = React.useRef(0)
       const centeredSeq = React.useRef(-1)
-      const graphRef = React.useRef(graph)
-      graphRef.current = graph
+      const located = React.useMemo(() => {
+        const map = new Map()
+        for (const section of sections) {
+          for (const entry of section.graph.nodes) map.set(entry.id, { entry, section })
+        }
+        return map
+      }, [sections])
+      const locatedRef = React.useRef(located)
+      locatedRef.current = located
 
       const fit = React.useCallback(() => {
         const viewport = viewportRef.current
         if (viewport === null) return
         const width = viewport.clientWidth
         const height = viewport.clientHeight
-        if (width <= 0 || height <= 0) return
+        if (width <= 0 || height <= 0 || bounds.width <= 0 || bounds.height <= 0) return
         const padding = 20
-        const widthScale = (width - padding * 2) / graph.bounds.width
-        const heightScale = (height - padding * 2) / graph.bounds.height
-        const scale = Math.min(1, Math.max(0.2, graph.compact ? widthScale : Math.min(widthScale, heightScale)))
+        const widthScale = (width - padding * 2) / bounds.width
+        const heightScale = (height - padding * 2) / bounds.height
+        const scale = Math.min(1, Math.max(0.2, compact ? widthScale : Math.min(widthScale, heightScale)))
         setView({
-          x: (width - graph.bounds.width * scale) / 2,
-          y: graph.compact ? padding : (height - graph.bounds.height * scale) / 2,
+          x: (width - bounds.width * scale) / 2,
+          y: compact ? padding : (height - bounds.height * scale) / 2,
           scale,
         })
         touched.current = false
-      }, [graph])
+      }, [bounds, compact])
 
       const zoomAt = React.useCallback((clientX, clientY, factor) => {
         const viewport = viewportRef.current
@@ -1664,9 +1759,16 @@ window.__ModuleLoader__.load({
         zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, factor)
       }
 
+      // Fit once, then keep the user's pan: only a new conversation joining the
+      // canvas (or a viewport resize before the first manual move) may recenter.
+      const autoFit = React.useRef({ key: '', count: 0 })
       React.useLayoutEffect(() => {
-        fit()
-      }, [fit])
+        const key = `${Math.round(bounds.width)}x${Math.round(bounds.height)}`
+        const previous = autoFit.current
+        const countChanged = previous.count !== sections.length
+        autoFit.current = { key, count: sections.length }
+        if (!touched.current || countChanged || previous.key === '') fit()
+      }, [bounds.width, bounds.height, sections.length, fit])
 
       React.useEffect(() => {
         const viewport = viewportRef.current
@@ -1693,22 +1795,29 @@ window.__ModuleLoader__.load({
       // search, without fighting a manual pan.
       React.useEffect(() => {
         if (center === null || center === undefined || center.seq === centeredSeq.current) return
-        const entry = graphRef.current?.byId.get(center.id)
+        const hit = locatedRef.current.get(center.id)
         const viewport = viewportRef.current
-        if (entry === undefined || viewport === null) return
+        if (hit === undefined || viewport === null) return
         centeredSeq.current = center.seq
         const current = viewRef.current
+        const pointX = hit.section.x + hit.entry.x + hit.entry.width / 2
+        const pointY = hit.section.y + PANEL_HEADER + hit.entry.y + hit.entry.height / 2
         setView({
           scale: current.scale,
-          x: viewport.clientWidth / 2 - (entry.x + entry.width / 2) * current.scale,
-          y: viewport.clientHeight / 2 - (entry.y + entry.height / 2) * current.scale,
+          x: viewport.clientWidth / 2 - pointX * current.scale,
+          y: viewport.clientHeight / 2 - pointY * current.scale,
         })
         touched.current = true
       }, [center])
 
       function onKeyDown(event) {
         if (event.target?.tagName === 'INPUT' || event.target?.tagName === 'TEXTAREA') return
-        const ordered = [...graph.nodes].sort((a, b) => a.y - b.y || a.x - b.x)
+        const ordered = [...located.values()]
+          .sort((a, b) => (
+            a.section.y + a.entry.y - (b.section.y + b.entry.y)
+            || a.section.x + a.entry.x - (b.section.x + b.entry.x)
+          ))
+          .map((hit) => hit.entry)
         if (ordered.length === 0) return
         const index = ordered.findIndex((entry) => entry.id === selectedId)
         const move = (next) => {
@@ -1736,10 +1845,10 @@ window.__ModuleLoader__.load({
           return
         }
         if (event.key === 'Enter' || event.key === ' ') {
-          const entry = graph.byId.get(selectedId)
-          if (entry === undefined) return
+          const hit = located.get(selectedId)
+          if (hit === undefined) return
           event.preventDefault()
-          onOpen(entry)
+          onOpen(hit.entry)
           return
         }
         if (event.key === 'Escape') {
@@ -1757,8 +1866,13 @@ window.__ModuleLoader__.load({
           return
         }
         if (event.button !== 0) return
-        if (event.target?.closest?.('.ct-node') !== null && event.target?.closest?.('.ct-node') !== undefined) return
+        // Header buttons and the zoom pill must receive their own clicks; only
+        // the empty canvas and the nodes participate in dragging/selection.
+        if (event.target?.closest?.('.ct-panel-head') !== null && event.target?.closest?.('.ct-panel-head') !== undefined) return
         if (event.target?.closest?.('.ct-zoom') !== null && event.target?.closest?.('.ct-zoom') !== undefined) return
+        // Clicking the graph should arm the keyboard shortcuts as well.
+        event.currentTarget.focus?.({ preventScroll: true })
+        if (event.target?.closest?.('.ct-node') !== null && event.target?.closest?.('.ct-node') !== undefined) return
         pan.current = {
           pointerId: event.pointerId,
           x: event.clientX,
@@ -1824,38 +1938,36 @@ window.__ModuleLoader__.load({
         },
           h('svg', {
             className: 'ct-edges',
-            width: graph.bounds.width,
-            height: graph.bounds.height,
-            viewBox: `0 0 ${graph.bounds.width} ${graph.bounds.height}`,
+            width: bounds.width,
+            height: bounds.height,
+            viewBox: `0 0 ${bounds.width} ${bounds.height}`,
             'aria-hidden': true,
-          }, graph.edges.map((edge) => {
-            const parent = graph.byId.get(edge.parentId)
-            const child = graph.byId.get(edge.childId)
-            if (parent === undefined || child === undefined) return null
-            return h('path', {
-              key: edge.id,
-              className: `ct-edge${edge.current ? ' ct-edge-current' : ''}`,
-              d: edgePath(parent, child),
-            })
-          })),
-          graph.nodes.map((entry) => h(GraphNode, {
-            key: entry.id,
-            entry,
-            selected: entry.id === selectedId,
+          }, sections.map((section) => (
+            section.collapsed
+              ? null
+              : h('g', {
+                key: section.key,
+                transform: `translate(${section.x} ${section.y + PANEL_HEADER})`,
+              }, section.graph.edges.map((edge) => {
+                const parent = section.graph.byId.get(edge.parentId)
+                const child = section.graph.byId.get(edge.childId)
+                if (parent === undefined || child === undefined) return null
+                return h('path', {
+                  key: edge.id,
+                  className: `ct-edge${edge.current ? ' ct-edge-current' : ''}`,
+                  d: edgePath(parent, child),
+                })
+              }))
+          ))),
+          sections.map((section) => h(TreePanel, {
+            key: section.key,
+            section,
+            selectedId,
             onSelect,
             onOpen,
-            onToggleCollapse: typeof onToggleCollapse === 'function' ? onToggleCollapse : () => {},
-          })),
-          graph.nodes.length === 1
-            ? h('div', {
-              className: 'ct-empty-note',
-              style: {
-                left: `${graph.root.x}px`,
-                top: `${graph.root.y + graph.root.height + 16}px`,
-                width: `${graph.root.width}px`,
-              },
-            }, t('empty.branches'))
-            : null),
+            onToggleCollapse,
+            onTogglePanel,
+          }))),
         h('div', { className: 'ct-zoom', onPointerDown: (event) => event.stopPropagation() },
           h('button', {
             type: 'button',
@@ -1877,6 +1989,81 @@ window.__ModuleLoader__.load({
             title: t('head.fit'),
             'aria-label': t('head.fit'),
           }, h(IconFit, { size: 14 }))))
+    }
+
+    /** One conversation's tree, drawn at its place on the shared canvas. */
+    function TreePanel({ section, selectedId, onSelect, onOpen, onToggleCollapse, onTogglePanel }) {
+      const { model, graph, collapsed } = section
+      const className = [
+        'ct-panel',
+        model.current ? 'ct-panel-current' : '',
+        collapsed ? 'ct-panel-collapsed' : '',
+      ].filter((token) => token !== '').join(' ')
+      const toggleLabel = collapsed ? t('panel.expand') : t('panel.collapse')
+      return h('section', {
+        className,
+        'data-root': model.id,
+        style: {
+          left: `${section.x}px`,
+          top: `${section.y}px`,
+          width: `${section.width}px`,
+          height: `${section.height}px`,
+        },
+      },
+        h('header', { className: 'ct-panel-head' },
+          h('button', {
+            type: 'button',
+            className: 'ct-panel-chevron',
+            onClick: onTogglePanel,
+            'aria-expanded': !collapsed,
+            title: toggleLabel,
+            'aria-label': toggleLabel,
+          }, h(IconChevron, { size: 13 })),
+          h('button', {
+            type: 'button',
+            className: 'ct-panel-title',
+            onClick: () => onSelect(model.id),
+            title: model.title,
+          }, model.title),
+          model.current
+            ? h('span', { className: 'ct-panel-badge ct-panel-badge-current' }, t('panel.current'))
+            : null,
+          model.rootArchived
+            ? h('span', { className: 'ct-panel-badge' }, t('node.archived'))
+            : null,
+          model.branchCount > 0
+            ? h('span', { className: 'ct-panel-badge' }, t('panel.branches', { count: model.branchCount }))
+            : null,
+          collapsed
+            ? h('span', { className: 'ct-panel-badge' }, t('panel.collapsed'))
+            : null,
+          model.running && !collapsed
+            ? h('span', { className: 'ct-panel-badge ct-panel-badge-running' }, t('node.running'))
+            : null,
+          Number.isFinite(model.updatedAt) && section.width >= 360
+            ? h('span', { className: 'ct-panel-time' }, formatRelative(model.updatedAt))
+            : null),
+        collapsed
+          ? null
+          : h('div', { className: 'ct-panel-body' },
+            graph.nodes.map((entry) => h(GraphNode, {
+              key: entry.id,
+              entry,
+              selected: entry.id === selectedId,
+              onSelect,
+              onOpen,
+              onToggleCollapse,
+            })),
+            graph.nodes.length === 1
+              ? h('div', {
+                className: 'ct-empty-note',
+                style: {
+                  left: `${graph.root.x}px`,
+                  top: `${graph.root.y + graph.root.height + 12}px`,
+                  width: `${graph.root.width}px`,
+                },
+              }, t('empty.branches'))
+              : null))
     }
 
     function GraphNode({ entry, selected, onSelect, onOpen, onToggleCollapse }) {
@@ -2074,7 +2261,15 @@ window.__ModuleLoader__.load({
                 : null))),
 
         isRoot
-          ? null
+          ? (entry.archived
+            ? h('div', { className: 'ct-side-danger' },
+              h('button', {
+                type: 'button',
+                className: 'ct-text-btn',
+                onClick: () => onUnarchive(entry.id),
+                disabled: !canUnarchive,
+              }, t('node.action.unarchive')))
+            : null)
           : h('div', { className: 'ct-side-danger' },
             entry.archived
               ? h('button', {
@@ -2115,6 +2310,481 @@ window.__ModuleLoader__.load({
               h('div', { className: 'ct-skeleton ct-skeleton-line' }),
               h('div', { className: 'ct-skeleton ct-skeleton-line' }),
               h('div', { className: 'ct-skeleton ct-skeleton-block' })))))
+    }
+
+    // ------------------------------------------------------------- workspace view
+
+    /**
+     * One element's rendered size, measured after layout and on resize.
+     *
+     * The canvas packer needs both axes: a Workspace of deep trees can trade
+     * width for height, and no CSS rule can make that decision for it.
+     */
+    function useElementSize(ref) {
+      const [size, setSize] = React.useState({ width: 0, height: 0 })
+      React.useLayoutEffect(() => {
+        const element = ref.current
+        if (element === null || element === undefined) return undefined
+        const measure = () => {
+          const width = typeof element.clientWidth === 'number' ? element.clientWidth : 0
+          const height = typeof element.clientHeight === 'number' ? element.clientHeight : 0
+          setSize((current) => (current.width === width && current.height === height ? current : { width, height }))
+        }
+        measure()
+        if (typeof ResizeObserver === 'undefined') return undefined
+        const observer = new ResizeObserver(measure)
+        observer.observe(element)
+        return () => observer.disconnect()
+      }, [])
+      return size
+    }
+
+    /**
+     * Split ordered panels into columns of roughly equal height.
+     *
+     * Contiguous groups preserve reading order: the current conversation is the
+     * first panel of the first column, and recency still runs down each column.
+     * Every column receives at least one panel.
+     */
+    function splitColumns(panels, columns) {
+      const total = panels.reduce((sum, panel) => sum + panel.height, 0) + PANEL_GAP * (panels.length - 1)
+      const groups = []
+      let start = 0
+      let remaining = total
+      for (let index = 0; index < columns; index += 1) {
+        const columnsLeft = columns - index
+        const limit = panels.length - (columnsLeft - 1)
+        const share = remaining / columnsLeft
+        let end = start
+        let used = 0
+        while (end < limit && (end === start || used + panels[end].height <= share)) {
+          used += panels[end].height + PANEL_GAP
+          end += 1
+        }
+        groups.push(panels.slice(start, end))
+        remaining -= used
+        start = end
+      }
+      return groups
+    }
+
+    /**
+     * Place every conversation tree on one canvas.
+     *
+     * Panels keep the order the page already has (current conversation first,
+     * then recency). One column is the default because a tree reads top to
+     * bottom; extra columns are used only when they measurably raise the scale
+     * at which the whole Workspace still fits. That matters when one deep tree
+     * would otherwise squeeze every label into a smear, and it never rearranges
+     * a Workspace that already fits in a single readable column.
+     */
+    function layoutPanels(items, viewport, collapsed = new Set()) {
+      const panels = []
+      for (const item of items) {
+        const isCollapsed = collapsed instanceof Set && collapsed.has(item.key)
+        const graph = item.graph
+        const naturalWidth = Math.max(240, graph.bounds.width)
+        panels.push({
+          key: item.key,
+          model: item.model,
+          graph,
+          collapsed: isCollapsed,
+          width: isCollapsed ? Math.min(naturalWidth, 360) : naturalWidth,
+          height: PANEL_HEADER + (isCollapsed ? 0 : graph.bounds.height),
+        })
+      }
+      if (panels.length === 0) return { sections: [], bounds: { width: 0, height: 0 } }
+
+      const viewportWidth = Number.isFinite(viewport?.width) && viewport.width > 0 ? viewport.width : 960
+      const viewportHeight = Number.isFinite(viewport?.height) && viewport.height > 0 ? viewport.height : 640
+      const fitScale = (width, height) => Math.min(
+        1,
+        (viewportWidth - 40) / Math.max(1, width),
+        (viewportHeight - 40) / Math.max(1, height),
+      )
+
+      let best = null
+      const maxColumns = Math.min(MAX_COLUMNS, panels.length)
+      for (let columns = 1; columns <= maxColumns; columns += 1) {
+        const groups = splitColumns(panels, columns)
+        const widths = groups.map((group) => Math.max(...group.map((panel) => panel.width)))
+        const heights = groups.map((group) => (
+          group.reduce((sum, panel) => sum + panel.height, 0) + PANEL_GAP * (group.length - 1)
+        ))
+        const width = widths.reduce((sum, value) => sum + value, 0) + PANEL_GAP * (columns - 1)
+        const height = Math.max(...heights)
+        const scale = fitScale(width, height)
+        if (best === null || scale > best.scale + 0.02) {
+          best = { scale, groups, widths, width, height }
+        }
+      }
+
+      const sections = []
+      let left = 0
+      for (let index = 0; index < best.groups.length; index += 1) {
+        let top = 0
+        for (const panel of best.groups[index]) {
+          sections.push({ ...panel, x: left, y: top })
+          top += panel.height + PANEL_GAP
+        }
+        left += best.widths[index] + PANEL_GAP
+      }
+      return { sections, bounds: { width: best.width, height: best.height } }
+    }
+
+    /**
+     * The 对话树 view, scoped to the Workspace of the current session.
+     *
+     * Every conversation of that Workspace — including the ones that never
+     * branched — is its own tree panel on one shared canvas. The page keeps the
+     * single-tree reading order for the conversation being read, and the whole
+     * Workspace stays one surface to pan, zoom, search and inspect.
+     */
+    function TreeView({ sessionId, useSessions, useWorkspaces, useSessionAccess, openView }) {
+      const state = useStore()
+      const sessions = useSessions((value) => value)
+      const workspaces = useWorkspaces((value) => value)
+      const archived = React.useMemo(() => archivedSetOf(workspaces), [workspaces])
+      const workspace = React.useMemo(() => workspaceView(workspaces, sessionId), [workspaces, sessionId])
+      const ids = React.useMemo(
+        () => forestSessionIds(workspace.sessionIds, sessions, sessionId),
+        [workspace, sessions, sessionId],
+      )
+      const idsKey = ids.join('|')
+      const compact = useCompactLayout()
+      const forest = state.forests[workspace.key]
+      const loading = state.forestLoading[workspace.key] === true
+      const error = state.forestErrors[workspace.key]
+      const notice = state.notices[sessionId]
+      const [query, setQuery] = React.useState('')
+      const [showArchived, setShowArchived] = React.useState(false)
+      const [collapsedPanels, setCollapsedPanels] = React.useState(() => new Set())
+      const [collapsedNodes, setCollapsedNodes] = React.useState(() => new Set())
+      const [selectedId, setSelectedId] = React.useState(null)
+      const [center, setCenter] = React.useState(null)
+      const centerSeq = React.useRef(0)
+      const hostRef = React.useRef(null)
+      const viewport = useElementSize(hostRef)
+
+      React.useEffect(() => {
+        void store.loadForest(workspace.key, ids)
+      }, [workspace.key, idsKey, state.forestEpoch])
+
+      // Opening a node calls openSession(..., { forceChat: true }); the fresh
+      // page must land on Chat even if that conversation last remembered the
+      // tree view. The flag is consumed here, by the page that opens next.
+      React.useEffect(() => {
+        if (typeof openView !== 'function') return
+        const pendingSince = pendingChatSwitch.get(sessionId)
+        if (pendingSince === undefined) return
+        pendingChatSwitch.delete(sessionId)
+        if (Date.now() - pendingSince > 3000) return
+        openView('chat', 'conversation-tree')
+      }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+      React.useEffect(() => {
+        setCollapsedPanels(new Set())
+        setCollapsedNodes(new Set())
+        setSelectedId(null)
+        setCenter(null)
+      }, [workspace.key])
+
+      const projection = React.useMemo(() => forestModels(forest, {
+        sessions,
+        archived,
+        showArchived,
+        currentSessionId: sessionId,
+      }), [forest, sessions, archived, showArchived, sessionId])
+
+      // The page's own conversation is the only node allowed to read as
+      // “current”; another panel's root is just that tree's root.
+      const panelOrder = React.useRef({ key: '', rank: new Map() })
+      const items = React.useMemo(() => {
+        // Freeze each panel's place while the page is open. Recency may change
+        // under a running conversation, and a tree jumping across the canvas
+        // while it is being read is worse than a slightly stale order. New
+        // conversations append; a workspace switch starts the ranking over.
+        const order = panelOrder.current
+        if (order.key !== workspace.key) {
+          order.key = workspace.key
+          order.rank = new Map()
+        }
+        const alive = new Set(projection.models.map((model) => model.id))
+        for (const id of [...order.rank.keys()]) {
+          if (!alive.has(id)) order.rank.delete(id)
+        }
+        let next = 0
+        for (const rank of order.rank.values()) next = Math.max(next, rank + 1)
+        for (const model of projection.models) {
+          if (!order.rank.has(model.id)) order.rank.set(model.id, next++)
+        }
+        const models = [...projection.models].sort((a, b) => {
+          if (a.current !== b.current) return a.current ? -1 : 1
+          return (order.rank.get(a.id) ?? 0) - (order.rank.get(b.id) ?? 0)
+        })
+        const out = []
+        for (const model of models) {
+          const currentId = model.tree.nodes.some((node) => node.id === sessionId) ? sessionId : ''
+          const graph = buildGraph({ ...model.tree, currentId }, {
+            sessions,
+            archived,
+            showArchived,
+            collapsed: collapsedNodes,
+            query,
+            compact,
+          })
+          if (graph !== null) out.push({ key: model.id, model, graph })
+        }
+        return out
+      }, [projection, sessions, archived, showArchived, collapsedNodes, query, compact, sessionId, workspace.key])
+
+      const layout = React.useMemo(
+        () => layoutPanels(items, viewport, collapsedPanels),
+        [items, viewport, collapsedPanels],
+      )
+      const sections = layout.sections
+      const located = React.useMemo(() => {
+        const map = new Map()
+        for (const section of sections) {
+          for (const entry of section.graph.nodes) map.set(entry.id, { entry, section })
+        }
+        return map
+      }, [sections])
+
+      const focusNode = React.useCallback((id) => {
+        if (typeof id !== 'string' || id === '') return
+        centerSeq.current += 1
+        setSelectedId(id)
+        setCenter({ id, seq: centerSeq.current })
+      }, [])
+
+      React.useEffect(() => {
+        if (located.size === 0) {
+          if (selectedId !== null) setSelectedId(null)
+          return
+        }
+        if (selectedId !== null && located.has(selectedId)) return
+        if (located.has(sessionId)) {
+          setSelectedId(sessionId)
+          return
+        }
+        const preferred = sections.find((section) => section.model.current) ?? sections[0]
+        setSelectedId(preferred?.graph.current?.id ?? null)
+      }, [located, sections, selectedId, sessionId])
+
+      // A search moves the canvas to the first hit, so a deep Workspace cannot
+      // leave the answer outside the viewport.
+      React.useEffect(() => {
+        if (query.trim() === '') return
+        for (const section of sections) {
+          const hit = section.graph.nodes.find((entry) => entry.highlight)
+          if (hit === undefined) continue
+          // A collapsed panel would center on a node nobody can see; unfold it
+          // before moving the canvas there.
+          if (section.collapsed) {
+            setCollapsedPanels((current) => {
+              if (!current.has(section.key)) return current
+              const next = new Set(current)
+              next.delete(section.key)
+              return next
+            })
+          }
+          focusNode(hit.id)
+          return
+        }
+        // Runs on a new query (or when the forest first arrives) only;
+        // refreshes must not move the page.
+      }, [query, sections.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+      async function refresh() {
+        const next = await store.loadForest(workspace.key, ids, { force: true })
+        if (next === undefined) {
+          const failure = store.get().forestErrors[workspace.key]
+          if (failure !== undefined) store.toast('error', failure)
+        }
+      }
+
+      function fallbackFor(model, nodeId) {
+        const removed = new Set(subtreeOf(model.tree, nodeId).map((node) => node.id))
+        for (const other of projection.models) {
+          if (other.id === model.id) continue
+          const candidate = other.tree.nodes.find((node) => !removed.has(node.id))
+          if (candidate !== undefined) return candidate.id
+        }
+        const inside = model.tree.nodes.find((node) => !removed.has(node.id))
+        return inside?.id ?? null
+      }
+
+      function openNodeById(nodeId) {
+        if (nodeId === sessionId) {
+          if (typeof openView === 'function') openView('chat', 'conversation-tree')
+          return
+        }
+        openSession(nodeId, { forceChat: true })
+      }
+
+      function openEntry(entry) {
+        const id = typeof entry === 'string' ? entry : entry?.node?.id ?? entry?.id
+        if (id === undefined) return
+        if (archived.has(id)) {
+          store.toast('info', t('node.archivedOpen'))
+          return
+        }
+        openNodeById(id)
+      }
+
+      function togglePanel(rootId) {
+        setCollapsedPanels((current) => {
+          const next = new Set(current)
+          if (next.has(rootId)) next.delete(rootId)
+          else next.add(rootId)
+          return next
+        })
+      }
+
+      function toggleNode(nodeId) {
+        setCollapsedNodes((current) => {
+          const next = new Set(current)
+          if (next.has(nodeId)) next.delete(nodeId)
+          else next.add(nodeId)
+          return next
+        })
+      }
+
+      function requestArchive(nodeId) {
+        const hit = located.get(nodeId)
+        if (hit === undefined) return
+        const model = hit.section.model
+        const subtree = subtreeOf(model.tree, nodeId)
+        // Archiving a running conversation stops its activity, so a leaf needs
+        // the same confirmation a subtree already gets.
+        if (subtree.length > 1 || sessionOf(sessions, nodeId)?.running === true) {
+          store.openDialog({
+            kind: 'confirm',
+            action: 'archive',
+            sessionId,
+            nodeId,
+            fallbackSessionId: fallbackFor(model, nodeId),
+          })
+          return
+        }
+        void runArchive(model.tree, nodeId, sessionId, fallbackFor(model, nodeId))
+          .catch((failure) => store.toast('error', friendlyError(failure)))
+      }
+
+      function requestDelete(nodeId) {
+        const hit = located.get(nodeId)
+        if (hit === undefined) return
+        const model = hit.section.model
+        store.openDialog({
+          kind: 'confirm',
+          action: 'delete',
+          sessionId,
+          nodeId,
+          fallbackSessionId: fallbackFor(model, nodeId),
+        })
+      }
+
+      const matchedCount = sections.reduce((total, section) => total + section.graph.matchedCount, 0)
+      const truncated = workspace.sessionIds.length > ids.length
+      const counts = workspace.title !== ''
+        ? t('head.workspaceCount', {
+          workspace: workspace.title,
+          conversations: projection.conversationCount,
+          branches: projection.branchCount,
+        })
+        : t('head.forestCount', {
+          conversations: projection.conversationCount,
+          branches: projection.branchCount,
+        })
+
+      const header = h(TreeHeader, {
+        counts,
+        matched: query.trim() === '' ? null : matchedCount,
+        hasArchived: projection.hasArchived,
+        loading,
+        notice,
+        onRefresh: refresh,
+        query,
+        onQuery: setQuery,
+        showArchived,
+        onToggleArchived: () => setShowArchived((value) => !value),
+      })
+
+      if (forest === undefined) {
+        if (error !== undefined && loading !== true) {
+          return h('section', { className: 'ct-page' },
+            header,
+            h('div', { className: 'ct-state' },
+              h('p', null, error),
+              h('button', { type: 'button', className: 'ct-btn', onClick: refresh }, t('head.retry'))))
+        }
+        return h(TreeSkeleton)
+      }
+
+      const fallbackSection = sections.find((section) => section.model.current) ?? sections[0] ?? null
+      const selectedHit = (selectedId !== null ? located.get(selectedId) : undefined) ?? null
+      const ownHit = located.get(sessionId) ?? null
+      const selectedSection = selectedHit?.section ?? ownHit?.section ?? fallbackSection
+      const selectedEntry = selectedHit?.entry ?? ownHit?.entry ?? selectedSection?.graph.current ?? null
+
+      const emptyText = projection.hasArchived && !showArchived
+        ? t('forest.archivedOnly')
+        : t('forest.empty')
+      const empty = sections.length === 0
+        ? h('div', { className: 'ct-canvas-empty' },
+          h(IconTree, { size: 22 }),
+          h('p', null, emptyText))
+        : null
+      const notes = []
+      if (query.trim() !== '' && matchedCount === 0 && sections.length > 0) notes.push(t('forest.noMatch'))
+      if (truncated) notes.push(t('forest.truncated', { count: ids.length }))
+
+      return h('section', { className: 'ct-page' },
+        header,
+        h('div', { className: 'ct-body' },
+          h('div', { className: 'ct-canvas-host', ref: hostRef },
+            empty,
+            empty === null
+              ? h(TreeCanvas, {
+                key: workspace.key,
+                sections,
+                bounds: layout.bounds,
+                compact,
+                selectedId: selectedEntry?.id ?? null,
+                center,
+                onSelect: setSelectedId,
+                onOpen: openEntry,
+                onFocus: focusNode,
+                onEscape: () => setQuery(''),
+                onToggleCollapse: toggleNode,
+                onTogglePanel: togglePanel,
+              })
+              : null,
+            notes.length > 0
+              ? h('div', { className: 'ct-canvas-notes' },
+                notes.map((text) => h('p', { key: text, className: 'ct-canvas-note' }, text)))
+              : null),
+          selectedEntry === null || selectedSection === null
+            ? null
+            : h(NodeInspector, {
+              entry: selectedEntry,
+              graph: selectedSection.graph,
+              onSelect: setSelectedId,
+              onOpen: openEntry,
+              onBring: (nodeId) => store.openDialog({
+                kind: 'target',
+                sessionId,
+                sourceId: nodeId,
+                rootId: selectedSection?.model.tree.rootId ?? nodeId,
+              }),
+              onArchive: requestArchive,
+              onDelete: requestDelete,
+              onUnarchive: (nodeId) => {
+                void runUnarchive(nodeId, sessionId).catch((failure) => store.toast('error', friendlyError(failure)))
+              },
+              useSessionAccess,
+            })))
     }
 
     // ------------------------------------------------------------ branch action
@@ -2275,12 +2945,14 @@ window.__ModuleLoader__.load({
       const [truncated, setTruncated] = React.useState(false)
       const [busy, setBusy] = React.useState(false)
       const [error, setError] = React.useState('')
-      const tree = state.trees[dialog.sessionId]
-      const loading = state.loading[dialog.sessionId] === true
+      // The tree may come from the Workspace forest (the tree page) or from a
+      // single-tree load (the composer dock on the chat page).
+      const tree = treeForNode(state, dialog.sourceId) ?? state.trees[dialog.sessionId]
+      const loading = tree === undefined && state.loading[dialog.sessionId] === true
 
       React.useEffect(() => {
-        void store.loadTree(dialog.sessionId)
-      }, [dialog.sessionId])
+        if (treeForNode(store.get(), dialog.sourceId) === undefined) void store.loadTree(dialog.sessionId)
+      }, [dialog.sessionId, dialog.sourceId])
 
       const sourceNode = tree?.nodes?.find((node) => node.id === dialog.sourceId)
       const sourceTitle = sourceNode !== undefined ? titleOfNode(sessions, sourceNode) : t('target.source')
@@ -2446,11 +3118,11 @@ window.__ModuleLoader__.load({
       const state = useStore()
       const [busy, setBusy] = React.useState(false)
       const [error, setError] = React.useState('')
-      const tree = state.trees[dialog.sessionId]
-      const loading = state.loading[dialog.sessionId] === true
+      const tree = treeForNode(state, dialog.nodeId) ?? state.trees[dialog.sessionId]
+      const loading = tree === undefined && state.loading[dialog.sessionId] === true
       React.useEffect(() => {
-        void store.loadTree(dialog.sessionId)
-      }, [dialog.sessionId])
+        if (treeForNode(store.get(), dialog.nodeId) === undefined) void store.loadTree(dialog.sessionId)
+      }, [dialog.sessionId, dialog.nodeId])
       const node = tree?.nodes?.find((candidate) => candidate.id === dialog.nodeId)
       const subtree = tree === undefined ? [] : subtreeOf(tree, dialog.nodeId)
       const isDelete = dialog.action === 'delete'
@@ -2464,8 +3136,8 @@ window.__ModuleLoader__.load({
         setBusy(true)
         setError('')
         try {
-          if (isDelete) await runDelete(tree, dialog.nodeId, dialog.sessionId)
-          else await runArchive(tree, dialog.nodeId, dialog.sessionId)
+          if (isDelete) await runDelete(tree, dialog.nodeId, dialog.sessionId, dialog.fallbackSessionId)
+          else await runArchive(tree, dialog.nodeId, dialog.sessionId, dialog.fallbackSessionId)
         } catch (failure) {
           setError(friendlyError(failure))
           await refreshAfterMutation(dialog.sessionId, new Set()).catch(() => {})
@@ -2611,7 +3283,8 @@ window.__ModuleLoader__.load({
       .ct-icon-btn:focus-visible, .ct-open-btn:focus-visible, .ct-btn:focus-visible, .ct-btn-primary:focus-visible,
       .ct-btn-secondary:focus-visible, .ct-text-btn:focus-visible, .ct-link:focus-visible,
       .ct-node:focus-visible, .ct-target-item:focus-visible, .ct-dialog-close:focus-visible,
-      .ct-zoom button:focus-visible, .ct-dock-pill:focus-visible, .ct-branch-action:focus-visible {
+      .ct-zoom button:focus-visible, .ct-dock-pill:focus-visible, .ct-branch-action:focus-visible,
+      .ct-panel-title:focus-visible, .ct-panel-chevron:focus-visible {
         outline: 2px solid var(--dsw-alias-brand-primary);
         outline-offset: 2px;
       }
@@ -3270,6 +3943,129 @@ window.__ModuleLoader__.load({
       }
       .ct-confirm-more { padding: 6px 2px 0; color: var(--dsw-alias-label-secondary); font-size: 11.5px; }
 
+      .ct-canvas-host {
+        position: relative;
+        flex: 1 1 auto;
+        min-width: 0;
+        min-height: 0;
+        background: var(--dsw-alias-bg-base);
+      }
+      .ct-canvas-host > .ct-canvas { position: absolute; inset: 0; }
+      .ct-panel {
+        position: absolute;
+        border: 0;
+        background: transparent;
+      }
+      .ct-panel-collapsed .ct-panel-title { color: var(--dsw-alias-label-secondary); }
+      .ct-panel-current .ct-panel-title { color: var(--dsw-alias-state-business-primary); }
+      .ct-panel-head {
+        position: absolute;
+        left: 0;
+        top: 0;
+        right: 0;
+        height: 34px;
+        padding: 0 2px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        overflow: hidden;
+      }
+      .ct-panel-chevron {
+        flex: none;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--dsw-alias-label-secondary);
+        cursor: pointer;
+      }
+      .ct-panel-chevron:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+      .ct-panel-chevron > svg { transform: rotate(90deg); transition: transform .12s ease; }
+      .ct-panel-collapsed .ct-panel-chevron > svg { transform: rotate(0deg); }
+      .ct-panel-title {
+        min-width: 0;
+        flex: 0 1 auto;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--dsw-alias-label-primary);
+        font: inherit;
+        font-size: 13.5px;
+        font-weight: 600;
+        line-height: 1.4;
+        text-align: left;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: pointer;
+      }
+      .ct-panel-title:hover { color: var(--dsw-alias-brand-primary); }
+      .ct-panel-badge {
+        flex: none;
+        padding: 1px 7px;
+        border: 1px solid var(--dsw-alias-border-l1);
+        border-radius: 999px;
+        color: var(--dsw-alias-label-secondary);
+        font-size: 11px;
+        line-height: 1.5;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .ct-panel-badge-current {
+        color: var(--dsw-alias-state-business-primary);
+        border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 35%, transparent);
+      }
+      .ct-panel-badge-running {
+        color: var(--dsw-alias-state-success-primary);
+        border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 35%, transparent);
+      }
+      .ct-panel-time {
+        flex: none;
+        margin-left: auto;
+        padding-left: 6px;
+        color: var(--dsw-alias-label-tertiary);
+        font-size: 11.5px;
+        line-height: 1.4;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+      .ct-panel-body { position: absolute; left: 0; top: 34px; right: 0; bottom: 0; }
+      .ct-canvas-empty {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        color: var(--dsw-alias-label-secondary);
+        text-align: center;
+      }
+      .ct-canvas-empty p { margin: 0; font-size: 13px; line-height: 1.5; }
+      .ct-canvas-notes {
+        pointer-events: none;
+        position: absolute;
+        left: 14px;
+        bottom: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-width: min(60%, 420px);
+      }
+      .ct-canvas-note {
+        margin: 0;
+        padding: 2px 8px;
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 84%, transparent);
+        color: var(--dsw-alias-label-tertiary);
+        font-size: 11.5px;
+        line-height: 1.5;
+      }
+
       .ct-toast {
         pointer-events: auto;
         position: fixed;
@@ -3309,7 +4105,7 @@ window.__ModuleLoader__.load({
 
       @media (max-width: 960px) {
         .ct-body { flex-direction: column; }
-        .ct-canvas { min-height: 220px; }
+        .ct-canvas-host { min-height: 220px; }
         .ct-side {
           width: auto;
           flex: 0 1 46%;
@@ -3323,13 +4119,14 @@ window.__ModuleLoader__.load({
         .ct-top { height: 44px; padding: 0 8px 0 14px; gap: 10px; }
         .ct-h1 { font-size: 15px; }
         .ct-top-count { font-size: 11px; }
-        .ct-canvas { min-height: 190px; }
+        .ct-canvas-host { min-height: 190px; }
         .ct-side { flex-basis: 50%; }
         .ct-side-title { font-size: 15px; }
         .ct-usage-number { font-size: 22px; }
         .ct-backdrop { padding: 12px; }
         .ct-dialog-head, .ct-dialog-body, .ct-dialog-foot { padding-left: 16px; padding-right: 16px; }
         .ct-toast { bottom: 16px; }
+        .ct-panel-time { display: none; }
       }
       @media (prefers-reduced-motion: reduce) {
         .ct-page *, .ct-backdrop *, .ct-toast * { transition-duration: .001ms !important; animation-duration: .001ms !important; }
@@ -3368,9 +4165,16 @@ window.__ModuleLoader__.load({
         formatExact,
         tokenStatsOf,
         modelStatsOf,
+        componentTree,
+        workspaceView,
+        forestSessionIds,
+        forestModels,
+        treeForNode,
+        layoutPanels,
         TreeView,
         TreeHeader,
         TreeCanvas,
+        TreePanel,
         GraphNode,
         NodeInspector,
         TreeDockAction,

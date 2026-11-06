@@ -26,6 +26,8 @@ import { basename, dirname, join, isAbsolute, parse, resolve } from 'node:path'
 const BRANCH_ROUTE = '/api/conversation-tree/branch'
 /** Route: resolve the branch tree around one session. */
 const TREE_ROUTE = '/api/conversation-tree/tree'
+/** Route: resolve every connected tree that touches one workspace's sessions. */
+const FOREST_ROUTE = '/api/conversation-tree/forest'
 /** Route: compress one conversation for bring-back. */
 const SUMMARY_ROUTE = '/api/conversation-tree/summarize'
 /** Route: delete one branch subtree. */
@@ -43,6 +45,8 @@ const TREE_LOCK = `${TREE_FILE}.lock`
 const LOCK_STALE_MS = 30_000
 /** Largest JSON body any route accepts; the plugin never needs more than a few hundred bytes. */
 const MAX_BODY_BYTES = 64 * 1024
+/** Workspace sessions one forest request may name. */
+const MAX_FOREST_SESSIONS = 500
 
 /** Transcript characters carried into one compression call. */
 const MAX_CONTEXT_CHARS = 140_000
@@ -141,6 +145,15 @@ export function apply(ctx) {
       fetch: (request) => readTree(ctx, request),
     }),
     'conversation-tree: tree',
+  )
+  ctx.effect(
+    () => ctx.connection.fetch.register({
+      path: FOREST_ROUTE,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: (request) => readForest(ctx, request),
+    }),
+    'conversation-tree: forest',
   )
   ctx.effect(
     () => ctx.connection.fetch.register({
@@ -458,6 +471,186 @@ async function readTree(ctx, request) {
   }
 }
 
+/**
+ * POST /api/conversation-tree/forest
+ *
+ * Resolve every connected tree that touches one Workspace's Sessions. The
+ * Workspace membership is client knowledge, so the caller names the Sessions;
+ * the Host answers with one component per root, including the branches and
+ * ancestors those Sessions belong to. Sessions that never branched come back
+ * as single-node components, which is what makes the page a Workspace view
+ * instead of a per-conversation one.
+ */
+async function readForest(ctx, request) {
+  if (!sameSiteRequest(request)) return failure(403, 'cross-origin')
+  const body = await readJson(request)
+  if (body === undefined) return failure(400, 'invalid-json')
+  if (!Array.isArray(body.sessionIds)) return failure(400, 'missing-fields')
+  const sessionIds = []
+  const seen = new Set()
+  for (const value of body.sessionIds) {
+    if (typeof value !== 'string' || value === '' || value.length > 256) {
+      return failure(400, 'invalid-session-id')
+    }
+    if (seen.has(value)) continue
+    seen.add(value)
+    sessionIds.push(value)
+  }
+  if (sessionIds.length === 0) return failure(400, 'missing-fields')
+  if (sessionIds.length > MAX_FOREST_SESSIONS) return failure(400, 'too-many-sessions')
+  const includeStats = body.stats === true
+  try {
+    const payload = await withTree(async (known) => {
+      await promotePending(ctx, known).catch(() => {})
+      const knownChildren = new Set([...known.edges, ...known.pending].map((edge) => edge.childId))
+      const missing = sessionIds.filter((id) => !knownChildren.has(id))
+      const recovered = await recoverChains(ctx, known, missing)
+      if (recovered.length > 0) {
+        for (const edge of recovered) {
+          if (knownChildren.has(edge.childId)) continue
+          knownChildren.add(edge.childId)
+          known.edges.push(edge)
+        }
+        await saveTreeRegistry(known)
+      }
+      return buildForest(known, sessionIds)
+    })
+    pruneDeadHandles(ctx)
+    if (includeStats) {
+      const nodes = payload.components.flatMap((component) => component.nodes)
+      await augmentNodeStats(ctx, nodes, request.signal)
+    }
+    return json(payload)
+  } catch (error) {
+    return failure(409, `tree-failed:${errorMessage(error)}`)
+  }
+}
+
+/**
+ * Build one forest around the requested Sessions.
+ *
+ * A component is the complete connected tree of its root, so a branch fetched
+ * through its own id still comes back with the siblings and descendants that
+ * make the lineage readable. The requested ids only decide which components
+ * exist; they do not clip their contents.
+ *
+ * @param known - registry snapshot with edges and pending edges.
+ * @param sessionIds - Session ids belonging to one Workspace.
+ * @returns ordered components, conversation and branch counts.
+ */
+function buildForest(known, sessionIds) {
+  const all = [
+    ...known.edges.map((edge) => ({ ...edge, pending: false })),
+    ...known.pending.map((edge) => ({ ...edge, pending: true })),
+  ]
+  const byChild = new Map(all.map((edge) => [edge.childId, edge]))
+  const children = new Map()
+  for (const edge of all) {
+    const list = children.get(edge.parentId)
+    if (list === undefined) children.set(edge.parentId, [edge])
+    else list.push(edge)
+  }
+  for (const list of children.values()) {
+    list.sort((a, b) => a.createdAt - b.createdAt || a.childId.localeCompare(b.childId))
+  }
+
+  const rootOf = (start) => {
+    let current = start
+    const seen = new Set([start])
+    for (;;) {
+      const edge = byChild.get(current)
+      if (edge === undefined) return current
+      if (seen.has(edge.parentId)) throw new Error('conversation-tree-cycle')
+      seen.add(edge.parentId)
+      current = edge.parentId
+    }
+  }
+
+  const roots = new Set()
+  for (const id of sessionIds) roots.add(rootOf(id))
+  const components = [...roots]
+    .sort((a, b) => a.localeCompare(b))
+    .map((rootId) => ({ rootId, nodes: componentNodes(rootId, children) }))
+  const branchCount = components.reduce((total, component) => total + component.nodes.length - 1, 0)
+  return {
+    version: 2,
+    components,
+    conversationCount: components.length,
+    branchCount,
+  }
+}
+
+/** One root and every edge below it, breadth-first, with the accepted cycle guard. */
+function componentNodes(rootId, children) {
+  const root = {
+    id: rootId,
+    parentId: null,
+    atSeq: null,
+    turn: null,
+    snippet: '',
+    title: '',
+    createdAt: null,
+    pending: false,
+    depth: 0,
+    childCount: 0,
+  }
+  const nodes = [root]
+  const byId = new Map([[rootId, root]])
+  const queue = [rootId]
+  const visited = new Set([rootId])
+  while (queue.length > 0) {
+    const parentId = queue.shift()
+    const list = children.get(parentId) ?? []
+    const parent = byId.get(parentId)
+    parent.childCount = list.length
+    for (const edge of list) {
+      if (visited.has(edge.childId)) throw new Error('conversation-tree-cycle')
+      visited.add(edge.childId)
+      const node = {
+        id: edge.childId,
+        parentId: edge.parentId,
+        atSeq: edge.atSeq,
+        turn: edge.turn,
+        snippet: edge.snippet,
+        title: edge.title,
+        createdAt: edge.createdAt,
+        pending: edge.pending,
+        depth: parent.depth + 1,
+        childCount: 0,
+      }
+      nodes.push(node)
+      byId.set(edge.childId, node)
+      queue.push(edge.childId)
+    }
+  }
+  return nodes
+}
+
+/**
+ * Recover the ancestor chains of requested Sessions the registry has no edge
+ * for, with bounded parallelism. A Workspace read must not become a long
+ * serial log crawl just because one registry entry was lost.
+ */
+async function recoverChains(ctx, known, ids) {
+  if (ids.length === 0) return []
+  const found = new Map()
+  let cursor = 0
+  const worker = async () => {
+    for (;;) {
+      const id = ids[cursor]
+      cursor += 1
+      if (id === undefined) return
+      const chain = await recoverChain(ctx, known, id).catch(() => [])
+      for (const edge of chain) {
+        if (!found.has(edge.childId)) found.set(edge.childId, edge)
+      }
+    }
+  }
+  const width = Math.min(4, ids.length)
+  await Promise.all(Array.from({ length: width }, worker))
+  return [...found.values()]
+}
+
 /** Forget handles whose branch is no longer the live Agent for that id. */
 function pruneDeadHandles(ctx) {
   for (const [sessionId, handle] of handles) {
@@ -485,7 +678,13 @@ const STATS_READ_CONCURRENCY = 4
 
 /** Add each Session's own usage and Turn counts, reading cold logs when needed. */
 async function augmentLiveStats(ctx, payload, signal) {
-  if (payload === null || typeof payload !== 'object' || !Array.isArray(payload.nodes)) return
+  if (payload === null || typeof payload !== 'object') return
+  await augmentNodeStats(ctx, payload.nodes, signal)
+}
+
+/** Add each Session's own usage and Turn counts to one list of nodes. */
+async function augmentNodeStats(ctx, nodes, signal) {
+  if (!Array.isArray(nodes) || nodes.length === 0) return
   let persistence
   try {
     persistence = ctx.get('sessionPersistence')
@@ -494,8 +693,10 @@ async function augmentLiveStats(ctx, payload, signal) {
   }
   if (STATS_CACHE.size > 512) STATS_CACHE.clear()
   const cold = []
-  for (const node of payload.nodes) {
-    if (node === null || typeof node !== 'object') continue
+  const seen = new Set()
+  for (const node of nodes) {
+    if (node === null || typeof node !== 'object' || typeof node.id !== 'string' || seen.has(node.id)) continue
+    seen.add(node.id)
     const live = ctx.sessions.get(node.id)
     if (live !== undefined) {
       try {
@@ -1959,21 +2160,36 @@ function clip(value, limit) {
 /**
  * Defense in depth for write routes: the connection fence already checks the
  * same origin, but a route that deletes sessions should not depend on one
- * layer staying strict. A request with no Origin (same-origin GET utilities,
- * tests) passes; a foreign origin does not.
+ * layer staying strict.
+ *
+ * The browser's Origin is compared with the `Host` header, never with the
+ * request URL: Connection hands this handler a Fetch Request built on the
+ * synthetic base `http://dsh.internal`, so the URL authority is not the one the
+ * browser dialed. Comparing against it would reject every same-origin POST.
+ * A request with no Origin (a same-origin GET utility, a test, a local script)
+ * passes; a browser-marked cross-site request does not.
  */
 function sameSiteRequest(request) {
+  const site = request.headers?.get?.('sec-fetch-site')
+  if (site === 'cross-site') return false
   const origin = request.headers?.get?.('origin')
   if (typeof origin !== 'string' || origin === '') return true
+  const host = request.headers?.get?.('host')
+  // A browser always sends Host; without it, the Origin cannot be proven ours.
+  if (typeof host !== 'string' || host === '') return false
   try {
-    return new URL(origin).host === new URL(request.url).host
+    const originUrl = new URL(origin)
+    if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') return false
+    const hostUrl = new URL(`${originUrl.protocol}//${host}`)
+    return originUrl.host === hostUrl.host
   } catch {
     return false
   }
 }
 
 /** Read a JSON body without throwing; oversized bodies are rejected unread. */
-async function readJson(request) {  const declared = Number(request.headers?.get?.('content-length'))
+async function readJson(request) {
+  const declared = Number(request.headers?.get?.('content-length'))
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return undefined
   try {
     if (typeof request.text === 'function') {
@@ -2034,6 +2250,7 @@ function errorResponse(error) {
 /** Pure helpers used by the unit tests. */
 export const __test = {
   buildTree,
+  buildForest,
   branchPoint,
   resolveBranchBoundary,
   branchTitle,
@@ -2054,6 +2271,7 @@ export const __test = {
   retireUnownedBranch,
   createBranch,
   readTree,
+  readForest,
   ownUsage,
   ownCounts,
 }
