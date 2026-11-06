@@ -79,7 +79,7 @@ function render(element) {
 }
 
 await import('./client.js')
-assert.equal(captured.id, 'dsh-conversation-tree')
+assert.equal(captured.id, '@jiangyuxue666/dsh-conversation-tree')
 const plugin = captured.factory((name) => {
   if (name === 'react') return ReactStub
   throw new Error(`unexpected require: ${name}`)

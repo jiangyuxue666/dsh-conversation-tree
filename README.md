@@ -17,7 +17,13 @@ DSH Web 插件。把工作区里的所有对话和它们派生出的分支放在
 
 要求 DSH `>=0.2.2-rc.1 <0.3.0`。
 
-**从 GitHub 安装**（复制即用）
+**从 npm 安装**
+
+```bash
+dsh plugin --profile web add @jiangyuxue666/dsh-conversation-tree
+```
+
+**从 GitHub 安装**（暂无 npm 版本时可用）
 
 ```bash
 dsh plugin --profile web add github:jiangyuxue666/dsh-conversation-tree

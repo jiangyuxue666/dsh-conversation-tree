@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+
+- **包名改为 `@jiangyuxue666/dsh-conversation-tree`**。npm 上的 `dsh-conversation-tree` 已被另一个插件占用，同名发布会失败，也可能让人装错包。仓库名和 GitHub 安装方式不变。
+- 新增 `publishConfig.access = public`，scoped 包可以直接 `npm publish`。
+- README 的安装段同时给出 npm 与 GitHub 两条命令。
+- 版本 0.7.0。
+
 ## 0.6.3
 
 - 修 0.6.2 的「包内容守卫」测试在 Windows 上误报：它用 `path.join` 拼导入路径，Windows 得到反斜杠，和 `package.json` 的 `files`（正斜杠）比较时永远不相等，于是 CI 在 `windows-latest` 上红。现在统一规范化成正斜杠再比较。插件运行代码没有改动。

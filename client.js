@@ -14,7 +14,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: 'dsh-conversation-tree',
+  id: '@jiangyuxue666/dsh-conversation-tree',
   factory(require) {
     const React = require('react')
     const h = React.createElement
