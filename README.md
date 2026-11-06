@@ -17,28 +17,33 @@ DSH Web 插件。把工作区里的所有对话和它们派生出的分支放在
 
 要求 DSH `>=0.2.2-rc.1 <0.3.0`。
 
-**方式一：链接本地目录**（开发时推荐）
+**从 GitHub 安装**（复制即用）
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-conversation-tree
+dsh plugin --profile web add github:jiangyuxue666/dsh-conversation-tree
 ```
 
-安装后把 `dsh-conversation-tree` 加进该 profile 的 `dsh.profile.bundles`。
+也可以在 DSH 的「设置 → 插件 → 添加插件」里粘贴仓库地址
+`https://github.com/jiangyuxue666/dsh-conversation-tree`。
 
-**方式二：Web 界面**
+命令会把插件加进该 profile 的 `dsh.profile.bundles`，装完重启 DSH 并刷新页面。
 
-设置 → 插件 → 安装本地 Bundle，选择本目录。
-
-**方式三：打包安装**
+**从压缩包安装**
 
 ```bash
 npm pack
 dsh plugin --profile web add ./dsh-conversation-tree-0.6.3.tgz
 ```
 
-宿主包 `@deepseek-ai/dsh-session` 声明为 peerDependency：链接安装时由 DSH 提供，无需额外安装；想把它放到插件本地目录或要在本地跑测试时，再执行 `npm install`。
+**本地开发**
 
-装完重启 DSH 并刷新页面。
+```bash
+dsh plugin --profile web add /path/to/dsh-conversation-tree
+```
+
+这条只用于改代码：源码目录通过链接挂进 profile，改完重启 DSH 即可生效，不用重新安装。
+
+宿主包 `@deepseek-ai/dsh-session` 声明为 peerDependency，由 DSH 自身提供，安装时不需要额外处理；想在本地跑测试时才需要 `npm install`。
 
 ## 使用
 
