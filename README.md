@@ -67,6 +67,15 @@ npm install
 npm test
 ```
 
+代码结构：
+
+- `index.js` — 插件入口：路由表与 `apply`，实现都在 `lib/`
+- `lib/registry.js` — 分支边注册表与跨进程锁
+- `lib/tree.js` / `lib/session.js` — 树的读取、投影与会话日志访问
+- `lib/branch.js` / `lib/summarize.js` / `lib/delete.js` — 三个写操作
+- `lib/stats.js` — token / 轮次统计与缓存
+- `client.js` — Web 客户端。DSH 的客户端模块系统每个 bundle 只注册一个 factory，所以这里保持单文件
+
 Host 路由：
 
 - `POST /api/conversation-tree/branch`

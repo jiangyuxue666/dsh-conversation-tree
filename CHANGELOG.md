@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.2
+
+- **Host 代码按职责拆分**，行为不变：`index.js` 从 2492 行降到 159 行，只保留路由常量、`inject`、`apply` 和测试导出；实现移入 `lib/` 下的 11 个模块——`registry`（边注册表与跨进程锁）、`tree`（读取与投影）、`branch`、`summarize`、`delete`、`stats`（用量统计与缓存）、`session`（会话头与日志读取）、`models`、`transcript`、`handles`、`base`（HTTP 与公共工具）。
+- `package.json` 的 `files` 增加 `lib/*.js`，并新增一条守卫测试：入口递归 import 的每个模块都必须被发布清单覆盖，否则打包后插件会加载失败。
+- 客户端仍是单个 `client.js`：DSH 的客户端模块系统每个 bundle 只注册一个 factory（`window.__ModuleLoader__.load({id, factory})`），静态资源路由只服务图片，没有可拆分的子模块入口。
+- 版本 0.6.2。
+
 ## 0.6.1
 
 - **工作区成员解析下沉到 Host**。`/forest` 不再要求客户端打包这个工作区的会话列表：请求只带当前会话 id，Host 用 `ctx.workspaceRegistry` 的成员（和 UI 同一条 canonical-cwd 索引）解析范围，再并入旧客户端传来的列表作为提示。客户端因此去掉了 `forestSessionIds` 及其 300 上限逻辑，树页首屏也不再传输会话数组。

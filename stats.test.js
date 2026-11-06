@@ -8,7 +8,7 @@ const home = await mkdtemp(join(tmpdir(), 'dsh-conversation-tree-stats-'))
 const previousHome = process.env.DSH_HOME
 process.env.DSH_HOME = home
 const module = await import(`./index.js?stats-test=${Date.now()}`)
-const { augmentNodeStats, loadStatsCache, persistStats, scheduleStatsPersist, statsCache } = module.__test
+const { augmentNodeStats, loadStatsCache, persistStats, resetStatsCache, scheduleStatsPersist, statsCache } = module.__test
 
 after(async () => {
   if (previousHome === undefined) delete process.env.DSH_HOME
@@ -108,10 +108,9 @@ test('samples survive a restart through the sidecar', async () => {
   assert.equal(stored.entries.d.revision, 'rev-persist')
   assert.equal(stored.entries.d.counts.turns, 1)
 
-  // A restart is a fresh module instance: its one-shot load repopulates the
-  // process-wide sample map from the sidecar.
+  // A restart forgets the in-memory map and reads the sidecar again.
   statsCache.clear()
-  const restarted = await import(`./index.js?stats-restart=${Date.now()}`)
-  await restarted.__test.loadStatsCache()
+  resetStatsCache()
+  await loadStatsCache()
   assert.equal(statsCache.get('d')?.revision, 'rev-persist')
 })

@@ -48,6 +48,33 @@ test('every export the manifest publishes resolves to a file', async () => {
   }
 })
 
+test('every module the entry imports ships with the package', async () => {
+  const seen = new Set()
+  const queue = ['index.js']
+  const imports = []
+  while (queue.length > 0) {
+    const file = queue.pop()
+    if (seen.has(file)) continue
+    seen.add(file)
+    const source = await readFile(join(root, file), 'utf8')
+    for (const match of source.matchAll(/from '(\.[^']+)'/g)) {
+      const target = join(file, '..', match[1]).replace(/^\.\//, '')
+      imports.push(target)
+      queue.push(target)
+    }
+  }
+  assert.ok(imports.length > 0, 'the entry must import its modules')
+  for (const file of imports) {
+    await stat(join(root, file))
+    const published = (manifest.files ?? []).some((entry) => {
+      if (entry === file) return true
+      if (entry.endsWith('/*.js')) return file.startsWith(`${entry.slice(0, -5)}/`) && file.endsWith('.js')
+      return false
+    })
+    assert.ok(published, `${file} is imported by the entry but missing from package.json files`)
+  }
+})
+
 test('the package is publishable: no private flag, and repository metadata is set', () => {
   assert.notEqual(manifest.private, true, 'private: true blocks npm publish')
   assert.match(manifest.repository?.url ?? '', /^(git\+)?https:\/\/github\.com\//)
