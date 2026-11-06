@@ -33,7 +33,7 @@ dsh plugin --profile web add /path/to/dsh-conversation-tree
 
 ```bash
 npm pack
-dsh plugin --profile web add ./dsh-conversation-tree-0.6.1.tgz
+dsh plugin --profile web add ./dsh-conversation-tree-0.6.3.tgz
 ```
 
 宿主包 `@deepseek-ai/dsh-session` 声明为 peerDependency：链接安装时由 DSH 提供，无需额外安装；想把它放到插件本地目录或要在本地跑测试时，再执行 `npm install`。
@@ -69,11 +69,18 @@ npm test
 
 代码结构：
 
-- `index.js` — 插件入口：路由表与 `apply`，实现都在 `lib/`
+- `index.js` — 入口：路由常量、`inject`、`apply` 与测试导出
+- `lib/base.js` — 同源校验、JSON 读取、失败响应等公共件
 - `lib/registry.js` — 分支边注册表与跨进程锁
-- `lib/tree.js` / `lib/session.js` — 树的读取、投影与会话日志访问
-- `lib/branch.js` / `lib/summarize.js` / `lib/delete.js` — 三个写操作
-- `lib/stats.js` — token / 轮次统计与缓存
+- `lib/tree.js` — `/tree` 与 `/forest` 的读取与投影
+- `lib/session.js` — 会话日志访问、pending 推进、祖先链恢复
+- `lib/branch.js` — 创建分支
+- `lib/summarize.js` — 带回摘要
+- `lib/delete.js` — 删除子树（含平台分支）
+- `lib/stats.js` — token / 轮次统计与持久化缓存
+- `lib/models.js` — 模型路由与预设
+- `lib/transcript.js` — 事件转文字
+- `lib/handles.js` — 活动 agent 句柄表
 - `client.js` — Web 客户端。DSH 的客户端模块系统每个 bundle 只注册一个 factory，所以这里保持单文件
 
 Host 路由：
@@ -91,7 +98,7 @@ Host 路由：
 
 ## 版本
 
-当前 0.6.1，历史记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前 0.6.3，历史记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 
