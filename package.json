@@ -3,7 +3,7 @@
   "version": "0.3.1",
   "private": true,
   "type": "module",
-  "description": "A zoomable conversation-tree management view with branch lineage, own token usage, model, bring-back, archive, and subtree deletion.",
+  "description": "A conversation-tree view for DeepSeek Harness: keep every branch in one tree with its source turn, its own token usage and model, bring-back, archive and subtree deletion.",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -48,5 +48,6 @@
   },
   "scripts": {
     "test": "node --test conversation-tree.test.js client.test.js branch.test.js"
-  }
+  },
+  "author": "The dsh-conversation-tree authors"
 }
