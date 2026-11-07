@@ -2441,7 +2441,7 @@ window.__ModuleLoader__.load({
                 ? h('div', { className: 'ct-kv' },
                   h('dt', null, t('inspector.workspace')),
                   h('dd', { title: entry.workspace }, entry.workspace))
-                : null))),
+                : null)),
 
           // Usage last: it is a measurement of what happened, not the reason
           // this page exists. It used to open the panel with a 24px number.
@@ -2453,7 +2453,7 @@ window.__ModuleLoader__.load({
               usage !== null && usage.cacheHit !== null
                 ? h('span', { className: 'ct-cache' }, t('inspector.cacheHit', { percent: usage.cacheHit }))
                 : null),
-            h('dl', { className: 'ct-kv-list' }, usageRows)),
+            h('dl', { className: 'ct-kv-list' }, usageRows))),
 
         isRoot || external
           ? (isRoot && entry.archived
@@ -3879,7 +3879,7 @@ window.__ModuleLoader__.load({
         background: var(--dsw-alias-bg-layer-2);
       }
       .ct-btn-secondary:disabled { color: var(--dsw-alias-label-secondary); opacity: .45; cursor: not-allowed; }
-      .ct-section { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l1); }
+      .ct-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--dsw-alias-border-l1); }
       .ct-section-label {
         margin-bottom: 7px;
         color: var(--dsw-alias-label-secondary);

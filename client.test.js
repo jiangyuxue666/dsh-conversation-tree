@@ -647,6 +647,45 @@ test('tree UI components render without throwing', () => {
   })))
 })
 
+test('the inspector is one scrolling column plus the danger bar', () => {
+  const noop = () => {}
+  const graph = buildGraph(tree, { sessions, archived: new Set(['c']) })
+  const aside = withHooks(NodeInspector, {
+    entry: graph.byId.get('b'),
+    graph,
+    onSelect: noop,
+    onOpen: noop,
+    onBring: noop,
+    onArchive: noop,
+    onDelete: noop,
+    onUnarchive: noop,
+    onNote: noop,
+    onCompare: noop,
+    useSessionAccess: () => true,
+  })
+  // Every direct child of the panel is either the scroll area or the danger
+  // bar. The usage section once closed one parenthesis too late and became a
+  // pinned footer: it lost the section rhythm and could never scroll.
+  const children = (Array.isArray(aside.props.children) ? aside.props.children : [aside.props.children])
+    .filter((child) => child !== null && child !== undefined)
+  assert.deepEqual(children.map((child) => child.props?.className ?? ''), ['ct-side-scroll', 'ct-side-danger'])
+  const inside = []
+  const walk = (element) => {
+    if (element === null || element === undefined || typeof element !== 'object') return
+    if (Array.isArray(element)) {
+      for (const child of element) walk(child)
+      return
+    }
+    inside.push(element)
+    walk(element.props?.children)
+  }
+  walk(children[0])
+  assert.ok(
+    inside.some((element) => element.props?.className === 'ct-usage-number'),
+    'the usage block belongs inside the scrolling column',
+  )
+})
+
 test('trimCache keeps the newest entries and leaves a small cache alone', () => {
   const record = {
     old: { fetchedAt: 10 },
