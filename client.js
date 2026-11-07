@@ -186,9 +186,6 @@ window.__ModuleLoader__.load({
       'notice.deleting': '正在删除 {count} 个对话…',
       'notice.archived': '已归档 {count} 个对话',
       'notice.deleted': '已删除 {count} 个对话',
-      'notice.deletePending': '{count} 个对话将在 10 秒后删除',
-      'notice.undo': '撤销',
-      'notice.deleteCancelled': '已取消删除，什么都没动',
       'notice.unarchived': '已取消归档',
       'confirm.delete.title': '删除这棵子树？',
       'confirm.delete.body': '「{title}」及其下的所有分支会被永久删除，无法恢复。',
@@ -380,9 +377,6 @@ window.__ModuleLoader__.load({
       'notice.deleting': 'Deleting {count} conversation(s)…',
       'notice.archived': 'Archived {count} conversation(s)',
       'notice.deleted': 'Deleted {count} conversation(s)',
-      'notice.deletePending': '{count} conversation(s) will be deleted in 10 seconds',
-      'notice.undo': 'Undo',
-      'notice.deleteCancelled': 'Deletion cancelled — nothing was removed',
       'notice.unarchived': 'Unarchived',
       'confirm.delete.title': 'Delete this subtree?',
       'confirm.delete.body': '「{title}」 and every branch below it will be permanently deleted. This cannot be undone.',
@@ -802,13 +796,13 @@ window.__ModuleLoader__.load({
             forestEpoch: state.forestEpoch + 1,
           })
         },
-        toast(kind, text, action = null, ttl = TOAST_MS) {
+        toast(kind, text) {
           state.toastSeq += 1
           window.clearTimeout(toastTimer)
-          set({ toast: { kind, text, seq: state.toastSeq, action } })
+          set({ toast: { kind, text, seq: state.toastSeq } })
           toastTimer = window.setTimeout(() => {
             if (state.toast?.seq === state.toastSeq) set({ toast: null })
-          }, ttl)
+          }, TOAST_MS)
         },
         setNotice(sessionId, notice, ttl = 0) {
           if (typeof sessionId !== 'string' || sessionId === '') return
@@ -1468,42 +1462,9 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** How long a confirmed deletion waits for the undo. */
-    const UNDO_DELETE_MS = 10_000
-
-    /**
-     * Resolve true when the delay elapses, false when the undo is used.
-     *
-     * The toast carries the undo, so the window is visible rather than a
-     * hidden grace period; closing the page during it simply deletes nothing.
-     */
-    function deleteWindow(count) {
-      return new Promise((resolve) => {
-        let settled = false
-        const finish = (proceed) => {
-          if (settled) return
-          settled = true
-          window.clearTimeout(timer)
-          resolve(proceed)
-        }
-        const timer = window.setTimeout(() => finish(true), UNDO_DELETE_MS)
-        store.toast('info', t('notice.deletePending', { count }), {
-          label: t('notice.undo'),
-          onClick: () => finish(false),
-        }, UNDO_DELETE_MS + 1000)
-      })
-    }
-
     async function runDelete(tree, nodeId, currentSessionId, fallbackSessionId = null) {
       const subtree = subtreeOf(tree, nodeId)
       const ids = new Set(subtree.map((node) => node.id))
-      store.closeDialog()
-      // Removing a branch is the only irreversible action on this page, and it
-      // touches files on disk. Hold the request behind a ten second undo.
-      if (!await deleteWindow(ids.size)) {
-        store.toast('info', t('notice.deleteCancelled'))
-        return []
-      }
       store.setNotice(currentSessionId, {
         kind: 'working',
         text: t('notice.deleting', { count: ids.size }),
@@ -3664,14 +3625,7 @@ window.__ModuleLoader__.load({
       return h('div', { className: `ct-toast ct-toast-${tone}`, role: 'status' },
         h('span', { className: 'ct-toast-icon' },
           tone === 'error' ? h(IconAlert, { size: 16 }) : tone === 'success' ? h(IconCheck, { size: 16 }) : h(IconTree, { size: 16 })),
-        h('span', { className: 'ct-toast-text' }, toast.text),
-        toast.action !== null && toast.action !== undefined
-          ? h('button', {
-            type: 'button',
-            className: 'ct-toast-action',
-            onClick: () => toast.action.onClick(),
-          }, toast.action.label)
-          : null)
+        h('span', { className: 'ct-toast-text' }, toast.text))
     }
 
     function DialogShell({ title, subtitle, children, footer, onClose, busy = false, wide = false }) {
@@ -5075,20 +5029,6 @@ window.__ModuleLoader__.load({
       }
       .ct-toast-icon { flex: none; display: inline-flex; }
       .ct-toast-text { flex: 1 1 auto; min-width: 0; }
-      .ct-toast-action {
-        flex: none;
-        margin-left: 4px;
-        padding: 3px 10px;
-        border: 1px solid var(--dsw-alias-border-l2);
-        border-radius: 6px;
-        background: var(--dsw-alias-bg-layer-2);
-        color: var(--dsw-alias-label-primary);
-        font: inherit;
-        font-size: 12px;
-        line-height: 1.4;
-        cursor: pointer;
-      }
-      .ct-toast-action:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
       .ct-toast-error { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 35%, transparent); }
       .ct-toast-error .ct-toast-icon { color: var(--dsw-alias-state-error-primary); }
       .ct-toast-success .ct-toast-icon { color: var(--dsw-alias-state-success-primary); }

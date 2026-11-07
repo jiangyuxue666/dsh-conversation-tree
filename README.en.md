@@ -21,7 +21,7 @@ A web plugin for DeepSeek Harness. It draws every conversation of a workspace, t
 - **Where this tree got to** — one model call over the whole tree: each branch's conclusion, where it stalled, and which one is worth keeping. Only runs when you press it.
 - **Unread dot** — a branch that moved on since you last looked at it shows a dot.
 - **Export** — the whole tree as a Markdown outline, with titles and notes.
-- **Archive and delete** — in the side panel; deletion is limited to branches created by this plugin, and waits ten seconds behind an undo.
+- **Archive and delete** — in the side panel; deletion is limited to branches created by this plugin and runs as soon as you confirm.
 - **Search and keyboard** — cross-tree matching on titles and branch-point excerpts, centring the first hit; arrow keys, `Enter`, `Home`/`End`, `+`/`-` and `f`.
 
 ## Requirements
