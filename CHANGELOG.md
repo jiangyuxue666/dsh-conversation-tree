@@ -2,16 +2,24 @@
 
 本文件记录对外可见的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循语义化版本。
 
+## 0.7.1
+
+### Fixed
+
+- 在侧边栏或其它插件里删除一条分支后，对话树不再保留打不开的幽灵节点：读取时按会话存活集自愈，被删节点的子分支提升到最近的存活祖先，并标注「原来源对话已删除」；整条祖先链都不存在时，分支成为独立的树根（注册表新增 `roots`）。
+- 已删除的会话不再作为工作区成员进入森林，避免多出一块空白面板。
+- 被提升过的分支仍可正常删除：注册表新增 `headerParentId`，保留会话头里不可改写的原始父链接用于校验。
+- Host 启动时与 `api-session/removed` 之后各校正一次；对话树页面重新获得焦点时主动重新校验，侧边栏删除无需手动刷新。
+
+### Changed
+
+- 只通过 GitHub 安装，不再携带 npm 发布相关配置。
+
 ## 0.7.0
 
 ### Changed
 
-- 包名改为 `@jiangyuxue666/dsh-conversation-tree`。npm 上的 `dsh-conversation-tree` 已由其他项目占用，同名发布不可用。
-- 客户端 bundle 的模块 id 与包名保持一致。
-
-### Added
-
-- `publishConfig.access: public`。
+- 包名改为 `@jiangyuxue666/dsh-conversation-tree`，客户端 bundle 的模块 id 与之一致。
 
 ## 0.6.3
 

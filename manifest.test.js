@@ -77,7 +77,11 @@ test('every module the entry imports ships with the package', async () => {
   }
 })
 
-test('the package is publishable: no private flag, and repository metadata is set', () => {
-  assert.notEqual(manifest.private, true, 'private: true blocks npm publish')
+test('the manifest describes a package installed from its repository', () => {
+  // This plugin is distributed through GitHub (`dsh plugin add github:...`),
+  // never through an npm registry, so it carries no publish configuration.
+  assert.match(manifest.name, /^@[a-z0-9-]+\/[a-z0-9-]+$/, 'the name must stay scoped: it doubles as the client module id')
+  assert.match(manifest.version, /^\d+\.\d+\.\d+/, 'the version must be set')
   assert.match(manifest.repository?.url ?? '', /^(git\+)?https:\/\/github\.com\//)
+  assert.equal(manifest.publishConfig, undefined, 'no publishConfig: the package is not published to npm')
 })

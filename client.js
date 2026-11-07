@@ -52,6 +52,8 @@ window.__ModuleLoader__.load({
       'inspector.output': '输出',
       'inspector.cacheHit': '缓存命中 {percent}%',
       'inspector.external': '原生分支（只读）',
+      'inspector.relinked': '原来源对话已删除，此分支已提升到上一级',
+      'inspector.detached': '原来源对话已删除，此对话现在是一棵树的根',
       'inspector.model': '模型',
       'inspector.provider': '提供方',
       'inspector.reasoning': '推理',
@@ -204,6 +206,8 @@ window.__ModuleLoader__.load({
       'inspector.output': 'Output',
       'inspector.cacheHit': 'Cache hit {percent}%',
       'inspector.external': 'Native fork (read only)',
+      'inspector.relinked': 'Its source conversation was deleted; this branch moved up one level',
+      'inspector.detached': 'Its source conversation was deleted; this conversation is now a tree root',
       'inspector.model': 'Model',
       'inspector.provider': 'Provider',
       'inspector.reasoning': 'Reasoning',
@@ -2064,6 +2068,7 @@ window.__ModuleLoader__.load({
         entry.current ? 'ct-node-current' : '',
         entry.archived ? 'ct-node-archived' : '',
         entry.pending ? 'ct-node-pending' : '',
+        entry.node?.relinked === true ? 'ct-node-relinked' : '',
         entry.parentId === null ? 'ct-node-root' : '',
         entry.dimmed ? 'ct-node-dimmed' : '',
         entry.highlight ? 'ct-node-match' : '',
@@ -2182,6 +2187,11 @@ window.__ModuleLoader__.load({
               entry.node.turn !== null && entry.node.turn !== undefined
                 ? h('span', { className: 'ct-source-turn' }, t('inspector.turn', { turn: entry.node.turn }))
                 : null),
+            entry.node.relinked === true
+              ? h('p', { className: 'ct-source-note' }, t('inspector.relinked'))
+              : entry.node.detached === true
+                ? h('p', { className: 'ct-source-note' }, t('inspector.detached'))
+                : null,
             isRoot
               ? null
               : h('div', { className: 'ct-kv' },
@@ -2584,6 +2594,24 @@ window.__ModuleLoader__.load({
           if (failure !== undefined) store.toast('error', failure)
         }
       }
+
+      // A conversation deleted from the sidebar leaves the Workspace while this
+      // page is still open; the canvas would keep drawing a node nothing can
+      // open until the next manual refresh. Revalidate when the page regains
+      // focus — the store's short cache keeps that from becoming a request per
+      // click, and the Host repairs the edges on the read that follows.
+      React.useEffect(() => {
+        function onFocus() {
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+          void store.loadForest(workspace.key, sessionId)
+        }
+        window.addEventListener('focus', onFocus)
+        document.addEventListener('visibilitychange', onFocus)
+        return () => {
+          window.removeEventListener('focus', onFocus)
+          document.removeEventListener('visibilitychange', onFocus)
+        }
+      }, [workspace.key, sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
       function fallbackFor(model, nodeId) {
         const removed = new Set(subtreeOf(model.tree, nodeId).map((node) => node.id))
@@ -3327,6 +3355,7 @@ window.__ModuleLoader__.load({
       .ct-node-root:not(.ct-node-selected):not(.ct-node-current) { border-color: var(--dsw-alias-border-l2); }
       .ct-node-archived { opacity: .58; border-style: dashed; }
       .ct-node-pending { border-style: dashed; }
+      .ct-node-relinked { border-style: dotted; }
       .ct-node-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--dsw-alias-state-idle-primary); }
       .ct-node-dot-current { background: var(--dsw-alias-state-business-primary); }
       .ct-node-dot-running { background: var(--dsw-alias-state-success-primary); }
@@ -3505,6 +3534,12 @@ window.__ModuleLoader__.load({
         line-height: 1.3;
       }
       .ct-source-line { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+      .ct-source-note {
+        margin: 6px 0 0;
+        color: var(--dsw-alias-state-warn-primary);
+        font-size: 12px;
+        line-height: 1.5;
+      }
       .ct-source-root { font-size: 13px; line-height: 1.5; }
       .ct-source-turn {
         flex: none;

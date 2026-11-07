@@ -38,7 +38,7 @@ https://github.com/jiangyuxue666/dsh-conversation-tree
 
 ```bash
 npm pack
-dsh plugin --profile web add ./jiangyuxue666-dsh-conversation-tree-0.7.0.tgz
+dsh plugin --profile web add ./jiangyuxue666-dsh-conversation-tree-0.7.1.tgz
 ```
 
 ### 本地开发
@@ -65,6 +65,7 @@ dsh plugin --profile web add /path/to/dsh-conversation-tree
 
 - 树仅管理通过「对话树分支」创建的会话；DSH 原生分支按钮创建的会话不在此视图中。
 - 分支同时出现在普通会话列表，树为额外的管理视图。
+- 在侧边栏或其它插件里删除会话后，对话树会在下一次读取时自动校正：被删节点的子分支提升到上一级并标注「原来源对话已删除」；若整条祖先链都已删除，分支会成为独立的树根，而不是留下一个打不开的节点。
 - 工作区视图的会话范围由 Host 依据工作区注册表解析；单次超过 2000 个会话时仅显示前 2000 个并给出提示。
 - 删除仅支持 macOS 与 Windows 上已验证的 JSONL 会话后端；其他平台仍可创建、查看与带回。
 - 根对话不可删除；分支归档使用 DSH 原生归档，可撤销。
@@ -83,6 +84,8 @@ npm test
 - `index.js` — 入口：路由常量、`inject`、`apply` 与测试导出
 - `lib/base.js` — 同源校验、JSON 读取、失败响应等公共件
 - `lib/registry.js` — 分支边注册表与跨进程锁
+- `lib/liveness.js` — 会话存活集采样（侧边栏删除后的自愈依据）
+- `lib/reconcile.js` — 幽灵边修复：删除被删节点、子分支提升或独立成根
 - `lib/tree.js` — `/tree` 与 `/forest` 的读取与投影
 - `lib/session.js` — 会话日志访问、pending 推进、祖先链恢复
 - `lib/branch.js` — 创建分支

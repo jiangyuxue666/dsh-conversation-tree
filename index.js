@@ -1,15 +1,16 @@
-import { resolve } from 'node:path'
 import { handles } from './lib/handles.js'
+import { forgetLiveSessions, liveSessionIds, resetLiveSessions } from './lib/liveness.js'
 import { sameSiteRequest } from './lib/base.js'
 import { titleOfEvents, transcriptOf } from './lib/transcript.js'
 import { selectionOfEvents } from './lib/models.js'
 import { validEdge } from './lib/registry.js'
 import { STATS_CACHE, augmentNodeStats, loadStatsCache, ownCounts, ownUsage, persistStats, pruneStatsCache, resetStatsCache, scheduleStatsPersist } from './lib/stats.js'
 import { recoverChain } from './lib/session.js'
-import { buildForest, buildTree, pruneDeadHandles, readForest, readTree } from './lib/tree.js'
+import { buildForest, buildTree, forestMembers, pruneDeadHandles, readForest, readTree, registeredChildren, repairTreeRegistry, withTreeForRead } from './lib/tree.js'
+import { nearestLiveAncestor, pruneDeadNodes } from './lib/reconcile.js'
 import { branchPoint, branchTitle, createBranch, nextBranchOrdinal, resolveBranchBoundary } from './lib/branch.js'
 import { redactSecrets, summarize, summaryPrompt } from './lib/summarize.js'
-import { cleanupWorkspaceSession, deleteSubtree, reconcileWorkspaceRegistry, retireUnownedBranch, sideProjectKey, sideSegment, subtreeEdges } from './lib/delete.js'
+import { cleanupWorkspaceSession, assertDeleteHeader, deleteSubtree, reconcileWorkspaceRegistry, retireUnownedBranch, sideProjectKey, sideSegment, subtreeEdges } from './lib/delete.js'
 
 /**
  * dsh-conversation-tree — host half.
@@ -114,6 +115,15 @@ export function apply(ctx) {
   // intentionally fire-and-forget: a storage fault must not stop the routes
   // from registering.
   void reconcileWorkspaceRegistry(ctx).catch(() => {})
+  // The tree registry outlives the Sessions it names. Deleting one from the
+  // sidebar (or any other plugin) never touches it, so the Host repairs the
+  // edges at start instead of waiting for a page to draw the phantom.
+  void repairTreeRegistry(ctx).catch(() => {})
+  // A Session leaving the live registry is the cheapest available hint that it
+  // may also be gone from disk. The next read then re-samples liveness.
+  if (typeof ctx.on === 'function') {
+    ctx.effect(() => ctx.on('api-session/removed', () => { forgetLiveSessions() }), 'conversation-tree: liveness')
+  }
   // On unload, forget handles whose branch is no longer the live Agent; a
   // retained handle would otherwise pin an agent that nothing can dispose.
   ctx.effect(() => () => pruneDeadHandles(ctx), 'conversation-tree: handles')
@@ -123,6 +133,16 @@ export function apply(ctx) {
 export const __test = {
   buildTree,
   buildForest,
+  forestMembers,
+  registeredChildren,
+  withTreeForRead,
+  repairTreeRegistry,
+  pruneDeadNodes,
+  nearestLiveAncestor,
+  liveSessionIds,
+  resetLiveSessions,
+  forgetLiveSessions,
+  assertDeleteHeader,
   branchPoint,
   resolveBranchBoundary,
   branchTitle,

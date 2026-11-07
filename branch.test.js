@@ -8,7 +8,7 @@ const home = await mkdtemp(join(tmpdir(), 'dsh-conversation-tree-'))
 const previousHome = process.env.DSH_HOME
 process.env.DSH_HOME = home
 const module = await import(`./index.js?host-test=${Date.now()}`)
-const { createBranch, readTree, readForest, buildTree, buildForest, ownUsage, ownCounts, cleanupWorkspaceSession, reconcileWorkspaceRegistry, retireUnownedBranch, nextBranchOrdinal, redactSecrets, summaryPrompt, sameSiteRequest } = module.__test
+const { createBranch, readTree, readForest, buildTree, buildForest, ownUsage, ownCounts, cleanupWorkspaceSession, reconcileWorkspaceRegistry, retireUnownedBranch, nextBranchOrdinal, redactSecrets, summaryPrompt, sameSiteRequest, pruneDeadNodes, nearestLiveAncestor, forestMembers, registeredChildren, resetLiveSessions, assertDeleteHeader } = module.__test
 
 after(async () => {
   if (previousHome === undefined) delete process.env.DSH_HOME
@@ -634,4 +634,137 @@ test('sameSiteRequest compares Origin with Host, not the synthetic request URL',
     },
   }
   assert.equal(sameSiteRequest(crossSite), false)
+})
+
+// ------------------------------------------------------------ dead branches
+
+/**
+ * A Host context whose storage knows exactly these Sessions.
+ * Deleting a branch from the sidebar removes the Session but never touches the
+ * registry, so every read has to reconcile against this listing.
+ */
+function liveContext(live, members = [...live]) {
+  const ids = new Set(live)
+  const persistence = {
+    identity: Symbol('test-persistence'),
+    root: join(tmpdir(), 'sessions'),
+    async list() {
+      return [...ids].map((id) => ({ header: { id }, revision: 'r1' }))
+    },
+    async stat(id) {
+      if (!ids.has(id)) return undefined
+      return { header: { id, parentSession: 'deleted-parent' }, revision: 'r1' }
+    },
+    async open() {
+      throw new Error('session-not-found')
+    },
+  }
+  return {
+    agents: { get() { return undefined }, store: { get() {} }, detachEntered() {} },
+    sessions: { get() { return undefined }, list() { return [] }, store: { get() {} }, detachEntered() {} },
+    sessionProjections: { stateOf() { return undefined } },
+    get(name) {
+      if (name === 'sessionPersistence') return persistence
+      if (name === 'workspaceRegistry') {
+        return { list: () => [{ workspaceId: 'w', sessionIds: members, attachSession() {} }] }
+      }
+      return undefined
+    },
+    effect(callback) { return callback() },
+  }
+}
+
+test('pruneDeadNodes promotes the branches of a deleted middle node', () => {
+  const known = {
+    version: 1,
+    pending: [],
+    roots: [],
+    edges: [edge('a', 'r', 10), edge('b', 'a', 20), edge('c', 'a', 30)],
+  }
+  const outcome = pruneDeadNodes(known, new Set(['r', 'b', 'c']), Date.now())
+  assert.equal(outcome.changed, true)
+  assert.deepEqual(outcome.dropped, ['a'])
+  assert.deepEqual(outcome.reparented.map((item) => [item.childId, item.from, item.to]), [['b', 'a', 'r'], ['c', 'a', 'r']])
+  assert.deepEqual(known.edges.map((item) => [item.childId, item.parentId]), [['b', 'r'], ['c', 'r']])
+  // The branch Session still names `a` in its immutable header; deletion needs
+  // that original link to prove which edge this is.
+  assert.equal(known.edges[0].headerParentId, 'a')
+  assert.equal(known.edges[0].relinked, true)
+})
+
+test('pruneDeadNodes detaches a chain whose root was deleted', () => {
+  const known = { version: 1, pending: [], roots: [], edges: [edge('b', 'a', 10), edge('c', 'b', 20)] }
+  const byChild = new Map(known.edges.map((item) => [item.childId, item]))
+  assert.equal(nearestLiveAncestor('b', 'c', byChild, new Set(['c'])), undefined)
+  const outcome = pruneDeadNodes(known, new Set(['c']), Date.now())
+  assert.deepEqual(outcome.detached, ['c'])
+  // `b` is dead and gone; `c` survives as its own tree root instead of hanging
+  // off a parent that cannot be drawn.
+  assert.deepEqual(known.roots, ['c'])
+  assert.equal(known.edges.length, 0)
+  assert.equal(registeredChildren(known).has('c'), true)
+})
+
+test('pruneDeadNodes never prunes a young or pending edge', () => {
+  const now = Date.now()
+  const young = { ...edge('a', 'r', now - 1000) }
+  const known = { version: 1, pending: [edge('p', 'r', 5)], roots: [], edges: [young] }
+  const outcome = pruneDeadNodes(known, new Set(['r', 'p']), now)
+  assert.equal(outcome.changed, false)
+  assert.equal(known.edges.length, 1)
+})
+
+test('pruneDeadNodes leaves the registry alone when existence is unknown', () => {
+  const known = { version: 1, pending: [], roots: [], edges: [edge('a', 'r', 1)] }
+  const outcome = pruneDeadNodes(known, undefined)
+  assert.equal(outcome.changed, false)
+  assert.equal(known.edges.length, 1)
+})
+
+test('a deleted Session is dropped from the Workspace members', () => {
+  const ctx = liveContext(['r', 'b'], ['r', 'a', 'b'])
+  assert.deepEqual(forestMembers(ctx, 'a', ['b'], new Set(['r', 'b'])), ['r', 'b'])
+})
+
+test('readForest repairs a branch deleted from the sidebar', async () => {
+  resetLiveSessions()
+  const known = {
+    version: 1,
+    pending: [],
+    roots: [],
+    edges: [edge('a', 'r', 10), edge('b', 'a', 20), edge('c', 'a', 30)],
+  }
+  await writeFile(join(home, 'conversation-tree.json'), JSON.stringify(known), 'utf8')
+  const ctx = liveContext(['r', 'b', 'c'], ['r', 'b', 'c'])
+  const response = await readForest(ctx, request({ sessionId: 'b' }))
+  const forest = await response.json()
+  assert.equal(response.status, 200)
+  const nodes = forest.components.flatMap((component) => component.nodes)
+  assert.deepEqual(nodes.map((node) => node.id).sort(), ['b', 'c', 'r'])
+  assert.equal(nodes.find((node) => node.id === 'b').parentId, 'r')
+  assert.equal(nodes.find((node) => node.id === 'b').relinked, true)
+  // The repair is durable: the next Host start must not paint the phantom again.
+  const stored = JSON.parse(await readFile(join(home, 'conversation-tree.json'), 'utf8'))
+  assert.equal(stored.edges.some((item) => item.childId === 'a'), false)
+  assert.equal(stored.edges.find((item) => item.childId === 'b').parentId, 'r')
+})
+
+test('readForest turns an orphaned branch into its own tree root', async () => {
+  resetLiveSessions()
+  const known = { version: 1, pending: [], roots: [], edges: [edge('b', 'a', 10)] }
+  await writeFile(join(home, 'conversation-tree.json'), JSON.stringify(known), 'utf8')
+  const ctx = liveContext(['b'], ['b'])
+  const forest = await (await readForest(ctx, request({ sessionId: 'b' }))).json()
+  assert.deepEqual(forest.components.map((component) => component.rootId), ['b'])
+  assert.equal(forest.components[0].nodes[0].detached, true)
+  const stored = JSON.parse(await readFile(join(home, 'conversation-tree.json'), 'utf8'))
+  assert.deepEqual(stored.roots, ['b'])
+  assert.equal(stored.edges.length, 0)
+})
+
+test('a reparented branch is still verifiable for deletion', () => {
+  const header = { id: 'b', parentSession: 'a', cwd }
+  const item = { childId: 'b', parentId: 'r', headerParentId: 'a' }
+  assert.doesNotThrow(() => assertDeleteHeader(header, item, { root: cwd }))
+  assert.throws(() => assertDeleteHeader({ ...header, parentSession: 'r' }, item, { root: cwd }), /session-binding-mismatch/)
 })

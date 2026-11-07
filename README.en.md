@@ -40,7 +40,7 @@ Installation writes the plugin into the profile's `dsh.profile.bundles`; restart
 
 ```bash
 npm pack
-dsh plugin --profile web add ./jiangyuxue666-dsh-conversation-tree-0.7.0.tgz
+dsh plugin --profile web add ./jiangyuxue666-dsh-conversation-tree-0.7.1.tgz
 ```
 
 ### Local development
@@ -67,6 +67,7 @@ Links the source directory into the profile; restart DSH after edits, no reinsta
 
 - The tree only manages sessions created through `Tree branch`; forks created by the native DSH button are not shown.
 - Branch sessions also appear in the regular conversation list; the tree is an additional management view.
+- Deleting a conversation from the sidebar (or another plugin) is reconciled on the next read: the children of the deleted node move up to the nearest live ancestor and are marked as re-linked; when the whole ancestor chain is gone, they become roots of their own trees instead of leaving a node nothing can open.
 - Workspace membership is resolved by the host from the workspace registry; more than 2000 sessions in one request are truncated with a notice.
 - Deletion is supported only on macOS and Windows, against the verified JSONL backend; other platforms can still branch, view and bring back.
 - Root conversations cannot be deleted; archiving a branch uses DSH's native archive and can be undone.
@@ -85,6 +86,8 @@ Layout:
 - `index.js` — entry: route constants, `inject`, `apply`, test exports
 - `lib/base.js` — same-origin check, JSON reading, failure responses
 - `lib/registry.js` — branch-edge registry and cross-process lock
+- `lib/liveness.js` — live-Session sampling, the basis for self-repair
+- `lib/reconcile.js` — ghost-edge repair: drop deleted nodes, promote or detach their branches
 - `lib/tree.js` — `/tree` and `/forest` reads and projections
 - `lib/session.js` — session log access, pending promotion, ancestor recovery
 - `lib/branch.js` — branch creation
