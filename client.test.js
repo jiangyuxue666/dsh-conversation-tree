@@ -100,6 +100,7 @@ const {
   forestModels,
   layoutPanels,
   treeForNode,
+  trimCache,
   TreeView,
   TreeHeader,
   TreeCanvas,
@@ -643,4 +644,16 @@ test('tree UI components render without throwing', () => {
     useSessions: () => sessions,
     useWorkspaces: () => ({ archivedSessionIds: [] }),
   })))
+})
+
+test('trimCache keeps the newest entries and leaves a small cache alone', () => {
+  const record = {
+    old: { fetchedAt: 10 },
+    mid: { fetchedAt: 20 },
+    fresh: { fetchedAt: 30 },
+  }
+  assert.deepEqual(Object.keys(trimCache(record, 2)).sort(), ['fresh', 'mid'])
+  // Below the limit the same object comes back, so the store does not churn.
+  assert.equal(trimCache(record, 5), record)
+  assert.deepEqual(trimCache({}, 3), {})
 })

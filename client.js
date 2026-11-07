@@ -92,6 +92,7 @@ window.__ModuleLoader__.load({
       'forest.noMatch': '没有匹配的对话',
       'forest.archivedOnly': '对话都已归档，点右上角的归档按钮显示',
       'forest.truncated': '对话太多，只显示前 {count} 个',
+      'forest.statsPartial': '对话较多，只统计了当前对话附近的用量',
       'panel.expand': '展开这棵对话树',
       'panel.collapse': '收起这棵对话树',
       'panel.collapsed': '已收起',
@@ -246,6 +247,7 @@ window.__ModuleLoader__.load({
       'forest.noMatch': 'No conversation matches',
       'forest.archivedOnly': 'Every conversation is archived — use the archive button above',
       'forest.truncated': 'Too many conversations; showing the first {count}',
+      'forest.statsPartial': 'Large Workspace: usage is shown for the conversations near the current one',
       'panel.expand': 'Expand this conversation tree',
       'panel.collapse': 'Collapse this conversation tree',
       'panel.collapsed': 'Collapsed',
@@ -477,6 +479,20 @@ window.__ModuleLoader__.load({
 
     // ---------------------------------------------------------------- store
 
+    /** A browsing session must not keep every tree and forest it ever opened. */
+    const TREE_CACHE_LIMIT = 12
+    const FOREST_CACHE_LIMIT = 3
+
+    /** Keep the newest entries of one cache record, by `fetchedAt`. */
+    function trimCache(record, limit) {
+      const entries = Object.entries(record)
+      if (entries.length <= limit) return record
+      entries.sort((left, right) => (right[1]?.fetchedAt ?? 0) - (left[1]?.fetchedAt ?? 0))
+      const kept = {}
+      for (const [key, value] of entries.slice(0, limit)) kept[key] = value
+      return kept
+    }
+
     function createStore() {
       let state = {
         trees: {},
@@ -548,7 +564,7 @@ window.__ModuleLoader__.load({
               }
               const tree = { ...data, stats: includeStats, fetchedAt: Date.now() }
               set({
-                trees: { ...state.trees, [sessionId]: tree },
+                trees: trimCache({ ...state.trees, [sessionId]: tree }, TREE_CACHE_LIMIT),
                 loading: withoutKey(state.loading, sessionId),
                 errors: withoutKey(state.errors, sessionId),
               })
@@ -613,7 +629,7 @@ window.__ModuleLoader__.load({
               }
               const forest = { ...data, stats: includeStats, signature, fetchedAt: Date.now() }
               set({
-                forests: { ...state.forests, [key]: forest },
+                forests: trimCache({ ...state.forests, [key]: forest }, FOREST_CACHE_LIMIT),
                 forestLoading: withoutKey(state.forestLoading, key),
                 forestErrors: withoutKey(state.forestErrors, key),
               })
@@ -2748,6 +2764,7 @@ window.__ModuleLoader__.load({
       const notes = []
       if (query.trim() !== '' && matchedCount === 0 && sections.length > 0) notes.push(t('forest.noMatch'))
       if (truncated) notes.push(t('forest.truncated', { count: forest?.memberCount ?? projection.conversationCount }))
+      if (forest?.statsTruncated === true) notes.push(t('forest.statsPartial'))
 
       return h('section', { className: 'ct-page' },
         header,
@@ -4172,6 +4189,7 @@ window.__ModuleLoader__.load({
       __test: {
         flattenTree,
         subtreeOf,
+        trimCache,
         targetNodes,
         defaultTarget,
         friendlyError,

@@ -4,7 +4,7 @@ import { sameSiteRequest } from './lib/base.js'
 import { titleOfEvents, transcriptOf } from './lib/transcript.js'
 import { selectionOfEvents } from './lib/models.js'
 import { validEdge } from './lib/registry.js'
-import { STATS_CACHE, augmentNodeStats, loadStatsCache, ownCounts, ownUsage, persistStats, pruneStatsCache, resetStatsCache, scheduleStatsPersist } from './lib/stats.js'
+import { STATS_CACHE, augmentNodeStats, loadStatsCache, ownCounts, ownUsage, persistStats, pruneStatsCache, resetStatsCache, scheduleStatsPersist, statsNodeSelection } from './lib/stats.js'
 import { recoverChain } from './lib/session.js'
 import { buildForest, buildTree, forestMembers, pruneDeadHandles, readForest, readTree, registeredChildren, repairTreeRegistry, withTreeForRead } from './lib/tree.js'
 import { nearestLiveAncestor, pruneDeadNodes } from './lib/reconcile.js'
@@ -167,6 +167,7 @@ export const __test = {
   ownUsage,
   ownCounts,
   augmentNodeStats,
+  statsNodeSelection,
   loadStatsCache,
   persistStats,
   pruneStatsCache,

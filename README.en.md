@@ -69,6 +69,7 @@ Links the source directory into the profile; restart DSH after edits, no reinsta
 - Branch sessions also appear in the regular conversation list; the tree is an additional management view.
 - Deleting a conversation from the sidebar (or another plugin) is reconciled on the next read: the children of the deleted node move up to the nearest live ancestor and are marked as re-linked; when the whole ancestor chain is gone, they become roots of their own trees instead of leaving a node nothing can open.
 - Workspace membership is resolved by the host from the workspace registry; more than 2000 sessions in one request are truncated with a notice.
+- In a large Workspace the usage pass covers the trees near the current conversation (at most 120 cold session logs per response) and the page says which ones were left out.
 - Deletion is supported only on macOS and Windows, against the verified JSONL backend; other platforms can still branch, view and bring back.
 - Root conversations cannot be deleted; archiving a branch uses DSH's native archive and can be undone.
 - Tree edges live in `$DSH_HOME/conversation-tree.json`, with a second copy in each branch's session log; a lost registry can be rebuilt from the logs.

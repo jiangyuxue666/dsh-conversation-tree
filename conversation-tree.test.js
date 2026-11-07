@@ -13,6 +13,7 @@ const {
   validEdge,
   sideProjectKey,
   sideSegment,
+  statsNodeSelection,
 } = __test
 
 function edge(childId, parentId, extra = {}) {
@@ -136,4 +137,22 @@ test('session path encoding is stable for the verified backend', () => {
   assert.equal(sideProjectKey('G:\\workspace\\demo'), '--G-workspace-demo--')
   assert.equal(sideSegment('session-abc'), 'session-abc')
   assert.equal(sideSegment('.'), '~002E')
+})
+
+test('statsNodeSelection reads the current tree first, whole trees at a time', () => {
+  const components = [
+    { rootId: 'r1', nodes: [{ id: 'a' }, { id: 'b' }] },
+    { rootId: 'r2', nodes: [{ id: 'c' }, { id: 'd' }] },
+    { rootId: 'r3', nodes: [{ id: 'e' }] },
+  ]
+  const picked = statsNodeSelection(components, 'c', 3)
+  // The current conversation's tree comes first, and a tree is never split:
+  // showing usage on half of one tree reads as a bug.
+  assert.deepEqual(picked.nodes.map((node) => node.id), ['c', 'd', 'a', 'b'])
+  assert.equal(picked.truncated, true)
+
+  const everything = statsNodeSelection(components, 'e', 10)
+  assert.equal(everything.truncated, false)
+  assert.equal(everything.nodes.length, 5)
+  assert.deepEqual(everything.nodes.map((node) => node.id), ['e', 'a', 'b', 'c', 'd'])
 })

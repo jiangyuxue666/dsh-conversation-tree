@@ -768,3 +768,22 @@ test('a reparented branch is still verifiable for deletion', () => {
   assert.doesNotThrow(() => assertDeleteHeader(header, item, { root: cwd }))
   assert.throws(() => assertDeleteHeader({ ...header, parentSession: 'r' }, item, { root: cwd }), /session-binding-mismatch/)
 })
+
+test('a registry with no edges never samples Session liveness', async () => {
+  resetLiveSessions()
+  await writeFile(join(home, 'conversation-tree.json'), JSON.stringify({
+    version: 1, edges: [], pending: [], roots: [],
+  }), 'utf8')
+  const ctx = liveContext(['r'], ['r'])
+  let listings = 0
+  const persistence = ctx.get('sessionPersistence')
+  persistence.list = async () => {
+    listings += 1
+    return [{ header: { id: 'r' } }]
+  }
+  const forest = await (await readForest(ctx, request({ sessionId: 'r' }))).json()
+  assert.equal(forest.conversationCount, 1)
+  // Nothing can have been pruned, so the scan would have been pure cost: the
+  // composer dock reads one tree on every conversation switch.
+  assert.equal(listings, 0)
+})
