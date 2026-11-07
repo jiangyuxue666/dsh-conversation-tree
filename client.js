@@ -1699,6 +1699,18 @@ window.__ModuleLoader__.load({
       const viewportRef = React.useRef(null)
       const [view, setView] = React.useState({ x: 0, y: 0, scale: 1 })
       const [dragging, setDragging] = React.useState(false)
+      // A compositor layer is smooth while the canvas moves, but it freezes the
+      // raster at the scale it had: a zoomed tree would stay a stretched bitmap
+      // of its 100% self. Promote the stage only during a gesture and drop the
+      // hint afterwards, which repaints it at the final scale.
+      const [live, setLive] = React.useState(false)
+      const liveTimer = React.useRef(0)
+      const markLive = React.useCallback((linger = 240) => {
+        setLive(true)
+        window.clearTimeout(liveTimer.current)
+        liveTimer.current = window.setTimeout(() => setLive(false), linger)
+      }, [])
+      React.useEffect(() => () => window.clearTimeout(liveTimer.current), [])
       const viewRef = React.useRef(view)
       viewRef.current = view
       const touched = React.useRef(false)
@@ -1732,7 +1744,8 @@ window.__ModuleLoader__.load({
           scale,
         })
         touched.current = false
-      }, [bounds, compact])
+        markLive(120)
+      }, [bounds, compact, markLive])
 
       const zoomAt = React.useCallback((clientX, clientY, factor) => {
         const viewport = viewportRef.current
@@ -1749,7 +1762,8 @@ window.__ModuleLoader__.load({
           y: clientY - rect.top - pointY * nextScale,
         })
         touched.current = true
-      }, [])
+        markLive()
+      }, [markLive])
 
       function zoomBy(factor) {
         const viewport = viewportRef.current
@@ -1880,6 +1894,7 @@ window.__ModuleLoader__.load({
         }
         event.currentTarget.setPointerCapture?.(event.pointerId)
         setDragging(true)
+        markLive(1200)
       }
 
       function onPointerMove(event) {
@@ -1905,6 +1920,7 @@ window.__ModuleLoader__.load({
           y: current.origin.y + event.clientY - current.y,
         })
         touched.current = true
+        markLive(600)
       }
 
       function endPan(event) {
@@ -1913,6 +1929,8 @@ window.__ModuleLoader__.load({
         if (pan.current === null) return
         pan.current = null
         setDragging(false)
+        // Release the compositor layer so the canvas repaints at this scale.
+        markLive(120)
       }
 
       const zoomLabel = `${Math.round(view.scale * 100)}%`
@@ -1932,8 +1950,13 @@ window.__ModuleLoader__.load({
         onPointerCancel: endPan,
       },
         h('div', {
-          className: 'ct-stage',
-          style: { transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` },
+          className: live ? 'ct-stage ct-stage-live' : 'ct-stage',
+          // Whole pixels for the pan keep hairline borders off half-pixel
+          // boundaries; the scale carries its own precision.
+          style: {
+            transform: `translate(${Math.round(view.x)}px, ${Math.round(view.y)}px) scale(${Math.round(view.scale * 1000) / 1000})`,
+            '--ct-scale': Math.round(view.scale * 1000) / 1000,
+          },
         },
           h('svg', {
             className: 'ct-edges',
@@ -3328,19 +3351,30 @@ window.__ModuleLoader__.load({
       }
       .ct-canvas[data-dragging="true"] { cursor: grabbing; }
       .ct-canvas:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: -2px; }
+      /*
+       * The stage is scaled, not resized. A permanent will-change: transform
+       * promoted it to a compositor layer that stayed rasterized at 100%, so
+       * every zoom stretched a bitmap: text went soft and 1px lines turned into
+       * uneven bands. The hint now lives only on .ct-stage-live, applied while
+       * a gesture moves, so the canvas repaints at the final scale afterwards.
+       */
       .ct-stage {
         position: absolute;
         left: 0;
         top: 0;
         transform-origin: 0 0;
-        will-change: transform;
+        /* One device pixel at any zoom, so lines stay hairlines like the rest
+           of the app instead of growing into slabs. */
+        --ct-hairline: calc(1px / var(--ct-scale, 1));
       }
+      /* Only while a gesture is moving: a persistent hint would keep the
+         stretched bitmap around after the zoom stops. */
+      .ct-stage-live { will-change: transform; }
       .ct-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
       .ct-edge {
         fill: none;
         stroke: var(--dsw-alias-border-l2);
-        stroke-width: 1.25;
-        vector-effect: non-scaling-stroke;
+        stroke-width: calc(1.25 / var(--ct-scale, 1));
       }
       .ct-edge-current { stroke: var(--dsw-alias-state-business-primary); stroke-opacity: .75; }
       .ct-node {
@@ -3352,6 +3386,7 @@ window.__ModuleLoader__.load({
         align-items: center;
         gap: 9px;
         border: 1px solid var(--dsw-alias-border-l1);
+        border-width: var(--ct-hairline);
         border-radius: 8px;
         background: var(--dsw-alias-bg-layer-1);
         color: var(--dsw-alias-label-primary);
