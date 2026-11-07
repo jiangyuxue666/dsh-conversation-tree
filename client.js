@@ -33,6 +33,14 @@ window.__ModuleLoader__.load({
     const PANEL_HEADER = 34
     const PANEL_GAP = 36
     const MAX_COLUMNS = 4
+    /**
+     * How far "fit" may enlarge a small tree.
+     *
+     * Fit only ever shrank, so three nodes in a 1100px canvas stayed at 100%
+     * in a corner and read as thumbnails. Filling the viewport up to here is
+     * the difference between a diagram and a sticker.
+     */
+    const FIT_MAX_SCALE = 1.5
 
     const ZH = {
       'view.tree': '对话树',
@@ -57,7 +65,7 @@ window.__ModuleLoader__.load({
       'inspector.relinked': '原来源对话已删除，此分支已提升到上一级',
       'inspector.detached': '原来源对话已删除，此对话现在是一棵树的根',
       'note.label': '备注',
-      'note.placeholder': '给这条分支起个名字',
+      'note.placeholder': '备注 · 只在这棵树里显示，不改会话名',
       'note.saved': '备注已保存',
       'compare.action': '对比',
       'compare.title': '对比对话',
@@ -110,6 +118,8 @@ window.__ModuleLoader__.load({
       'forest.archivedOnly': '对话都已归档，点右上角的归档按钮显示',
       'forest.truncated': '对话太多，只显示前 {count} 个',
       'forest.statsPartial': '对话较多，只统计了当前对话附近的用量',
+      'forest.showSingles': '另有 {count} 个还没分支的对话',
+      'forest.hideSingles': '收起还没分支的对话',
       'panel.expand': '展开这棵对话树',
       'panel.collapse': '收起这棵对话树',
       'panel.collapsed': '已收起',
@@ -227,7 +237,7 @@ window.__ModuleLoader__.load({
       'inspector.relinked': 'Its source conversation was deleted; this branch moved up one level',
       'inspector.detached': 'Its source conversation was deleted; this conversation is now a tree root',
       'note.label': 'Note',
-      'note.placeholder': 'Name this branch',
+      'note.placeholder': 'Note · shown in this tree only, never renames the conversation',
       'note.saved': 'Note saved',
       'compare.action': 'Compare',
       'compare.title': 'Compare conversations',
@@ -280,6 +290,8 @@ window.__ModuleLoader__.load({
       'forest.archivedOnly': 'Every conversation is archived — use the archive button above',
       'forest.truncated': 'Too many conversations; showing the first {count}',
       'forest.statsPartial': 'Large Workspace: usage is shown for the conversations near the current one',
+      'forest.showSingles': '{count} more conversation(s) with no branches',
+      'forest.hideSingles': 'Hide conversations with no branches',
       'panel.expand': 'Expand this conversation tree',
       'panel.collapse': 'Collapse this conversation tree',
       'panel.collapsed': 'Collapsed',
@@ -1836,7 +1848,7 @@ window.__ModuleLoader__.load({
         const padding = 20
         const widthScale = (width - padding * 2) / bounds.width
         const heightScale = (height - padding * 2) / bounds.height
-        const scale = Math.min(1, Math.max(0.2, compact ? widthScale : Math.min(widthScale, heightScale)))
+        const scale = Math.min(FIT_MAX_SCALE, Math.max(0.2, compact ? widthScale : Math.min(widthScale, heightScale)))
         setView({
           x: (width - bounds.width * scale) / 2,
           y: compact ? padding : (height - bounds.height * scale) / 2,
@@ -1913,7 +1925,7 @@ window.__ModuleLoader__.load({
         centeredSeq.current = center.seq
         const current = viewRef.current
         const pointX = hit.section.x + hit.entry.x + hit.entry.width / 2
-        const pointY = hit.section.y + PANEL_HEADER + hit.entry.y + hit.entry.height / 2
+        const pointY = hit.section.y + (hit.section.headerHeight ?? PANEL_HEADER) + hit.entry.y + hit.entry.height / 2
         setView({
           scale: current.scale,
           x: viewport.clientWidth / 2 - pointX * current.scale,
@@ -2068,7 +2080,7 @@ window.__ModuleLoader__.load({
               ? null
               : h('g', {
                 key: section.key,
-                transform: `translate(${section.x} ${section.y + PANEL_HEADER})`,
+                transform: `translate(${section.x} ${section.y + (section.headerHeight ?? PANEL_HEADER)})`,
               }, section.graph.edges.map((edge) => {
                 const parent = section.graph.byId.get(edge.parentId)
                 const child = section.graph.byId.get(edge.childId)
@@ -2115,8 +2127,10 @@ window.__ModuleLoader__.load({
     /** One conversation's tree, drawn at its place on the shared canvas. */
     function TreePanel({ section, selectedId, onSelect, onOpen, onToggleCollapse, onTogglePanel }) {
       const { model, graph, collapsed } = section
+      const bare = (section.headerHeight ?? PANEL_HEADER) === 0
       const className = [
         'ct-panel',
+        bare ? 'ct-panel-bare' : '',
         model.current ? 'ct-panel-current' : '',
         collapsed ? 'ct-panel-collapsed' : '',
       ].filter((token) => token !== '').join(' ')
@@ -2131,7 +2145,7 @@ window.__ModuleLoader__.load({
           height: `${section.height}px`,
         },
       },
-        h('header', { className: 'ct-panel-head' },
+        bare ? null : h('header', { className: 'ct-panel-head' },
           h('button', {
             type: 'button',
             className: 'ct-panel-chevron',
@@ -2391,16 +2405,6 @@ window.__ModuleLoader__.load({
             : null,
 
           h('section', { className: 'ct-section' },
-            h('div', { className: 'ct-section-label' }, t('inspector.usage')),
-            h('div', { className: 'ct-usage-total' },
-              h('span', { className: 'ct-usage-number' }, usage === null ? t('inspector.noUsage') : formatCompact(usage.total)),
-              usage === null ? null : h('span', { className: 'ct-usage-unit' }, t('inspector.tokens')),
-              usage !== null && usage.cacheHit !== null
-                ? h('span', { className: 'ct-cache' }, t('inspector.cacheHit', { percent: usage.cacheHit }))
-                : null),
-            h('dl', { className: 'ct-kv-list' }, usageRows)),
-
-          h('section', { className: 'ct-section' },
             h('div', { className: 'ct-section-label' }, t('inspector.model')),
             h('dl', { className: 'ct-kv-list' },
               h('div', { className: 'ct-kv' },
@@ -2438,6 +2442,18 @@ window.__ModuleLoader__.load({
                   h('dt', null, t('inspector.workspace')),
                   h('dd', { title: entry.workspace }, entry.workspace))
                 : null))),
+
+          // Usage last: it is a measurement of what happened, not the reason
+          // this page exists. It used to open the panel with a 24px number.
+          h('section', { className: 'ct-section' },
+            h('div', { className: 'ct-section-label' }, t('inspector.usage')),
+            h('div', { className: 'ct-usage-total' },
+              h('span', { className: 'ct-usage-number' }, usage === null ? t('inspector.noUsage') : formatCompact(usage.total)),
+              usage === null ? null : h('span', { className: 'ct-usage-unit' }, t('inspector.tokens')),
+              usage !== null && usage.cacheHit !== null
+                ? h('span', { className: 'ct-cache' }, t('inspector.cacheHit', { percent: usage.cacheHit }))
+                : null),
+            h('dl', { className: 'ct-kv-list' }, usageRows)),
 
         isRoot || external
           ? (isRoot && entry.archived
@@ -2558,6 +2574,11 @@ window.__ModuleLoader__.load({
      * a Workspace that already fits in a single readable column.
      */
     function layoutPanels(items, viewport, collapsed = new Set()) {
+      // One tree needs no header: the root node already carries its name, and a
+      // heading above a lone tree only repeated it. Headers come back as soon
+      // as the canvas holds more than one tree, where they are the only way to
+      // tell the panels apart.
+      const headerHeight = items.length > 1 ? PANEL_HEADER : 0
       const panels = []
       for (const item of items) {
         const isCollapsed = collapsed instanceof Set && collapsed.has(item.key)
@@ -2568,8 +2589,9 @@ window.__ModuleLoader__.load({
           model: item.model,
           graph,
           collapsed: isCollapsed,
+          headerHeight,
           width: isCollapsed ? Math.min(naturalWidth, 360) : naturalWidth,
-          height: PANEL_HEADER + (isCollapsed ? 0 : graph.bounds.height),
+          height: headerHeight + (isCollapsed ? 0 : graph.bounds.height),
         })
       }
       if (panels.length === 0) return { sections: [], bounds: { width: 0, height: 0 } }
@@ -2641,6 +2663,11 @@ window.__ModuleLoader__.load({
       // Armed by the inspector's Compare button: the next node becomes the
       // other side. Shift-click skips the arming step.
       const [comparePick, setComparePick] = React.useState(false)
+      // A conversation that never branched still owns a one-node tree. Next to
+      // a real tree that card has no edges at all, so it reads as clutter on a
+      // canvas whose whole subject is branching. The page's own conversation
+      // always stays; the rest is one click away.
+      const [showSingles, setShowSingles] = React.useState(false)
       const [center, setCenter] = React.useState(null)
       const centerSeq = React.useRef(0)
       const hostRef = React.useRef(null)
@@ -2719,9 +2746,16 @@ window.__ModuleLoader__.load({
         return out
       }, [projection, sessions, archived, showArchived, collapsedNodes, query, compact, sessionId, workspace.key])
 
+      const visibleItems = React.useMemo(() => {
+        if (showSingles) return items
+        const branched = items.filter((item) => item.model.branchCount > 0 || item.model.current)
+        return branched.length === 0 ? items : branched
+      }, [items, showSingles])
+      const hiddenSingles = items.length - visibleItems.length
+
       const layout = React.useMemo(
-        () => layoutPanels(items, viewport, collapsedPanels),
-        [items, viewport, collapsedPanels],
+        () => layoutPanels(visibleItems, viewport, collapsedPanels),
+        [visibleItems, viewport, collapsedPanels],
       )
       const sections = layout.sections
       const located = React.useMemo(() => {
@@ -2990,9 +3024,19 @@ window.__ModuleLoader__.load({
                 onTogglePanel: togglePanel,
               })
               : null,
-            notes.length > 0
+            hiddenSingles > 0 || showSingles || notes.length > 0
               ? h('div', { className: 'ct-canvas-notes' },
-                notes.map((text) => h('p', { key: text, className: 'ct-canvas-note' }, text)))
+                notes.map((text) => h('p', { key: text, className: 'ct-canvas-note' }, text)),
+                hiddenSingles > 0 || showSingles
+                  ? h('button', {
+                    key: 'singles',
+                    type: 'button',
+                    className: 'ct-canvas-note ct-canvas-toggle',
+                    onClick: () => setShowSingles((value) => !value),
+                  }, showSingles
+                    ? t('forest.hideSingles')
+                    : t('forest.showSingles', { count: hiddenSingles }))
+                  : null)
               : null),
           selectedEntry === null || selectedSection === null
             ? null
@@ -3633,7 +3677,12 @@ window.__ModuleLoader__.load({
         border-color: var(--dsw-alias-brand-primary);
         background: color-mix(in srgb, var(--dsw-alias-brand-primary) 4%, var(--dsw-alias-bg-layer-1));
       }
-      .ct-node-current { border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 55%, var(--dsw-alias-border-l2)); }
+      /* The conversation being read keeps a marker that survives the selection
+         colour: a business-colour edge instead of yet another border tint. */
+      .ct-node-current {
+        border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 55%, var(--dsw-alias-border-l2));
+        box-shadow: inset 3px 0 0 var(--dsw-alias-state-business-primary);
+      }
       .ct-node-root:not(.ct-node-selected):not(.ct-node-current) { border-color: var(--dsw-alias-border-l2); }
       .ct-node-archived { opacity: .58; border-style: dashed; }
       .ct-node-pending { border-style: dashed; }
@@ -3899,12 +3948,12 @@ window.__ModuleLoader__.load({
         overflow: hidden;
         overflow-wrap: anywhere;
       }
-      .ct-usage-total { display: flex; align-items: baseline; gap: 6px; margin-bottom: 8px; }
+      .ct-usage-total { display: flex; align-items: baseline; gap: 6px; margin-bottom: 6px; }
       .ct-usage-number {
-        font-size: 24px;
-        line-height: 1.1;
+        font-size: 17px;
+        line-height: 1.2;
         font-weight: 550;
-        letter-spacing: -.02em;
+        letter-spacing: -.01em;
         font-variant-numeric: tabular-nums;
       }
       .ct-usage-unit { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 1.2; }
@@ -4354,15 +4403,17 @@ window.__ModuleLoader__.load({
       .ct-panel-chevron:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
       .ct-panel-chevron > svg { transform: rotate(90deg); transition: transform .12s ease; }
       .ct-panel-collapsed .ct-panel-chevron > svg { transform: rotate(0deg); }
+      /* Multi-tree only. The root node already carries this name, so the header
+         reads as a section label instead of a second title. */
       .ct-panel-title {
         min-width: 0;
         flex: 0 1 auto;
         padding: 0;
         border: 0;
         background: transparent;
-        color: var(--dsw-alias-label-primary);
+        color: var(--dsw-alias-label-secondary);
         font: inherit;
-        font-size: 13.5px;
+        font-size: 12.5px;
         font-weight: 600;
         line-height: 1.4;
         text-align: left;
@@ -4393,7 +4444,6 @@ window.__ModuleLoader__.load({
       }
       .ct-panel-time {
         flex: none;
-        margin-left: auto;
         padding-left: 6px;
         color: var(--dsw-alias-label-tertiary);
         font-size: 11.5px;
@@ -4402,6 +4452,7 @@ window.__ModuleLoader__.load({
         font-variant-numeric: tabular-nums;
       }
       .ct-panel-body { position: absolute; left: 0; top: 34px; right: 0; bottom: 0; }
+      .ct-panel-bare .ct-panel-body { top: 0; }
       .ct-canvas-empty {
         position: absolute;
         inset: 0;
@@ -4432,6 +4483,21 @@ window.__ModuleLoader__.load({
         color: var(--dsw-alias-label-tertiary);
         font-size: 11.5px;
         line-height: 1.5;
+      }
+      .ct-canvas-toggle {
+        pointer-events: auto;
+        border: 1px solid var(--dsw-alias-border-l1);
+        background: var(--dsw-alias-bg-layer-1);
+        color: var(--dsw-alias-label-secondary);
+        font: inherit;
+        font-size: 11.5px;
+        line-height: 1.5;
+        text-align: left;
+        cursor: pointer;
+      }
+      .ct-canvas-toggle:hover {
+        border-color: var(--dsw-alias-border-l2);
+        color: var(--dsw-alias-label-primary);
       }
 
       .ct-toast {
@@ -4490,7 +4556,7 @@ window.__ModuleLoader__.load({
         .ct-canvas-host { min-height: 190px; }
         .ct-side { flex-basis: 50%; }
         .ct-side-title { font-size: 15px; }
-        .ct-usage-number { font-size: 22px; }
+        .ct-usage-number { font-size: 16px; }
         .ct-backdrop { padding: 12px; }
         .ct-dialog-head, .ct-dialog-body, .ct-dialog-foot { padding-left: 16px; padding-right: 16px; }
         .ct-toast { bottom: 16px; }

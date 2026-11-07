@@ -14,7 +14,7 @@ A web plugin for DeepSeek Harness. It draws every conversation of a workspace, t
 - **Workspace canvas** — every conversation is one tree, laid out on a shared canvas that pans and zooms; the current conversation is pinned first and highlighted.
 - **Branching** — `Tree branch` under any completed turn creates a child session that inherits the context up to that turn and records its source conversation, turn and branch-point excerpt.
 - **Node details** — source, branch turn, depth, the conversation's own turns and steps, token breakdown, cache hit rate and model.
-- **Notes** — name any conversation or branch; the name shows on the node (a root shows it as its panel title) and search matches it. Notes live in the plugin's registry, never in the session log.
+- **Notes** — name any conversation or branch; the name shows on the node (a root shows it on its own node) and search matches it. Notes live in the plugin's registry, never in the session log.
 - **Compare** — select a node, press `Compare` in the side panel and pick another (or `Shift`-click one) to see turns, steps, tool calls, usage, model and the last conclusion side by side.
 - **Bring back** — compresses the turns a conversation produced itself (skipping the inherited fork prefix) into a summary, offers an editable preview, then queues it into a target conversation.
 - **Archive and delete** — in the side panel; deletion is limited to branches created by this plugin.
@@ -61,7 +61,7 @@ Links the source directory into the profile; restart DSH after edits, no reinsta
 2. Click `Tree branch` under the message.
 3. Open the `Tree` tab to see every tree in the workspace.
 4. Click a node for details; double-click to open the conversation.
-5. Drag the canvas to pan, scroll to zoom; the corner button fits the canvas, the header arrow collapses one tree.
+5. Drag the canvas to pan, scroll to zoom; the corner button fits the canvas and may enlarge a small tree up to 150%. With several trees each header arrow collapses one tree; a lone tree has no header. Conversations that never branched stay folded at the bottom of the canvas.
 6. Use `Bring back` in the side panel to send a summary to a target conversation.
 7. Archive or delete a subtree at the bottom of the side panel.
 
