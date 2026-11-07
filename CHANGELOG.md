@@ -2,6 +2,18 @@
 
 本文件记录对外可见的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循语义化版本。
 
+## 0.8.0
+
+### Added
+
+- 节点备注：给任意对话或分支起名字，显示在节点上（根对话显示在面板标题），搜索也能命中。备注存在插件自己的注册表里，不写会话日志。
+- 分支对比：侧栏点「对比」再点另一个节点，或直接 Shift + 点击，并排看轮次、步数、工具调用次数、用量、模型和最后一条结论。
+- 新增路由 `POST /api/conversation-tree/note` 与 `POST /api/conversation-tree/compare`。
+
+### Fixed
+
+- 删除子树、或删除后在读取时自愈修剪，都会一并清掉对应节点的备注。
+
 ## 0.7.3
 
 ### Fixed

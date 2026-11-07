@@ -14,6 +14,8 @@ A web plugin for DeepSeek Harness. It draws every conversation of a workspace, t
 - **Workspace canvas** — every conversation is one tree, laid out on a shared canvas that pans and zooms; the current conversation is pinned first and highlighted.
 - **Branching** — `Tree branch` under any completed turn creates a child session that inherits the context up to that turn and records its source conversation, turn and branch-point excerpt.
 - **Node details** — source, branch turn, depth, the conversation's own turns and steps, token breakdown, cache hit rate and model.
+- **Notes** — name any conversation or branch; the name shows on the node (a root shows it as its panel title) and search matches it. Notes live in the plugin's registry, never in the session log.
+- **Compare** — select a node, press `Compare` in the side panel and pick another (or `Shift`-click one) to see turns, steps, tool calls, usage, model and the last conclusion side by side.
 - **Bring back** — compresses the turns a conversation produced itself (skipping the inherited fork prefix) into a summary, offers an editable preview, then queues it into a target conversation.
 - **Archive and delete** — in the side panel; deletion is limited to branches created by this plugin.
 - **Search and keyboard** — cross-tree matching on titles and branch-point excerpts, centring the first hit; arrow keys, `Enter`, `Home`/`End`, `+`/`-` and `f`.
@@ -107,6 +109,8 @@ Host routes:
 - `POST /api/conversation-tree/forest`
 - `POST /api/conversation-tree/summarize`
 - `POST /api/conversation-tree/delete`
+- `POST /api/conversation-tree/note`
+- `POST /api/conversation-tree/compare`
 
 ## Compatibility
 

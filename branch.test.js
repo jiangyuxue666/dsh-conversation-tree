@@ -8,7 +8,7 @@ const home = await mkdtemp(join(tmpdir(), 'dsh-conversation-tree-'))
 const previousHome = process.env.DSH_HOME
 process.env.DSH_HOME = home
 const module = await import(`./index.js?host-test=${Date.now()}`)
-const { createBranch, readTree, readForest, buildTree, buildForest, ownUsage, ownCounts, cleanupWorkspaceSession, reconcileWorkspaceRegistry, retireUnownedBranch, nextBranchOrdinal, redactSecrets, summaryPrompt, sameSiteRequest, pruneDeadNodes, nearestLiveAncestor, forestMembers, registeredChildren, resetLiveSessions, assertDeleteHeader } = module.__test
+const { createBranch, readTree, readForest, buildTree, buildForest, ownUsage, ownCounts, cleanupWorkspaceSession, reconcileWorkspaceRegistry, retireUnownedBranch, nextBranchOrdinal, redactSecrets, summaryPrompt, sameSiteRequest, pruneDeadNodes, nearestLiveAncestor, forestMembers, registeredChildren, resetLiveSessions, assertDeleteHeader, saveNodeNote, compareSessions, lastText, countToolCalls } = module.__test
 
 after(async () => {
   if (previousHome === undefined) delete process.env.DSH_HOME
@@ -540,7 +540,7 @@ test('readForest fills each node with its own usage when stats are requested', a
   }
 })
 
-test('apply registers the forest route beside the existing four', () => {
+test('apply registers every route the client calls', () => {
   const paths = []
   const ctx = {
     connection: {
@@ -557,10 +557,12 @@ test('apply registers the forest route beside the existing four', () => {
     sessions: { get() { return undefined } },
   }
   module.apply(ctx)
-  assert.equal(paths.length, 5)
+  assert.equal(paths.length, 7)
   assert.ok(paths.includes('POST /api/conversation-tree/forest'))
   assert.ok(paths.includes('POST /api/conversation-tree/branch'))
   assert.ok(paths.includes('GET /api/conversation-tree/tree'))
+  assert.ok(paths.includes('POST /api/conversation-tree/note'))
+  assert.ok(paths.includes('POST /api/conversation-tree/compare'))
 })
 
 test('nextBranchOrdinal takes the highest used sibling number', () => {
@@ -786,4 +788,106 @@ test('a registry with no edges never samples Session liveness', async () => {
   // Nothing can have been pruned, so the scan would have been pure cost: the
   // composer dock reads one tree on every conversation switch.
   assert.equal(listings, 0)
+})
+
+test('a note is stored, projected and cleared', async () => {
+  resetLiveSessions()
+  await writeFile(join(home, 'conversation-tree.json'), JSON.stringify({
+    version: 1,
+    pending: [],
+    roots: [],
+    edges: [edge('b', 'r', 10)],
+    notes: {},
+  }), 'utf8')
+  const ctx = liveContext(['r', 'b'], ['r', 'b'])
+  const saved = await (await saveNodeNote(ctx, request({ sessionId: 'b', note: '  方案 A  ' }))).json()
+  assert.equal(saved.note, '方案 A')
+
+  const tree = await (await readTree(ctx, {
+    url: 'http://localhost/api/conversation-tree/tree?sessionId=b',
+  })).json()
+  assert.equal(tree.nodes.find((node) => node.id === 'b').note, '方案 A')
+
+  const cleared = await (await saveNodeNote(ctx, request({ sessionId: 'b', note: '' }))).json()
+  assert.equal(cleared.note, '')
+  const again = await (await readTree(ctx, {
+    url: 'http://localhost/api/conversation-tree/tree?sessionId=b',
+  })).json()
+  assert.equal(again.nodes.find((node) => node.id === 'b').note, '')
+})
+
+test('pruneDeadNodes keeps a live note and drops a dead one', () => {
+  const known = {
+    version: 1,
+    pending: [],
+    roots: [],
+    edges: [edge('a', 'r', 10)],
+    notes: { a: '旧分支', r: '主线' },
+  }
+  pruneDeadNodes(known, new Set(['r']), Date.now())
+  assert.deepEqual(known.notes, { r: '主线' })
+})
+
+test('compareSessions reports what each side did', async () => {
+  const eventsA = [
+    { seq: 0, type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '问题 A' }] } },
+    { seq: 2, type: 'step/start', data: { turn: 1, step: 1 } },
+    { seq: 3, type: 'tool/call', data: { turn: 1, step: 1, name: 'read', arguments: '{}' } },
+    {
+      seq: 4,
+      type: 'assistant/message',
+      data: {
+        turn: 1,
+        step: 1,
+        usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 90 },
+        message: { content: [{ type: 'text', text: '结论 A' }] },
+      },
+    },
+    { seq: 5, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const eventsB = [
+    { seq: 0, type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '问题 B' }] } },
+    {
+      seq: 2,
+      type: 'assistant/message',
+      data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: '结论 B' }] } },
+    },
+  ]
+  const sessions = new Map([
+    ['a', { header: { id: 'a', cwd }, inheritedEventCount: 0, snapshotEvents: () => eventsA }],
+    ['b', { header: { id: 'b', cwd }, inheritedEventCount: 0, snapshotEvents: () => eventsB }],
+  ])
+  const ctx = {
+    ...liveContext(['a', 'b'], ['a', 'b']),
+    sessions: { get: (id) => sessions.get(id), list: () => [] },
+  }
+  const response = await compareSessions(ctx, request({ ids: ['a', 'b'] }))
+  const body = await response.json()
+  assert.equal(response.status, 200)
+  const [first, second] = body.sides
+  assert.equal(first.turns, 1)
+  assert.equal(first.steps, 1)
+  assert.equal(first.toolCalls, 1)
+  assert.equal(first.usage.outputTokens, 5)
+  assert.equal(first.usage.cacheReadTokens, 90)
+  assert.equal(first.lastAssistant, '结论 A')
+  assert.equal(second.lastAssistant, '结论 B')
+  assert.equal(second.toolCalls, 0)
+
+  assert.equal((await compareSessions(ctx, request({ ids: ['a'] }))).status, 400)
+  assert.equal((await compareSessions(ctx, request({ ids: [] }))).status, 400)
+})
+
+test('lastText reads the newest message of one role', () => {
+  const events = [
+    { type: 'user/message', data: { content: [{ type: 'text', text: '第一问' }] } },
+    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '第一答' }] } } },
+    { type: 'user/message', data: { content: [{ type: 'text', text: '第二问' }] } },
+  ]
+  assert.equal(lastText(events, 'user/message'), '第二问')
+  assert.equal(lastText(events, 'assistant/message'), '第一答')
+  assert.equal(lastText([], 'assistant/message'), '')
+  assert.equal(countToolCalls([{ type: 'tool/call' }, { type: 'tool/call' }], 1), 1)
 })

@@ -10,6 +10,8 @@ import { buildForest, buildTree, forestMembers, pruneDeadHandles, readForest, re
 import { nearestLiveAncestor, pruneDeadNodes } from './lib/reconcile.js'
 import { branchPoint, branchTitle, createBranch, nextBranchOrdinal, resolveBranchBoundary } from './lib/branch.js'
 import { redactSecrets, summarize, summaryPrompt } from './lib/summarize.js'
+import { saveNodeNote } from './lib/notes.js'
+import { compareSessions, countToolCalls, lastText, readSide } from './lib/compare.js'
 import { cleanupWorkspaceSession, assertDeleteHeader, deleteSubtree, reconcileWorkspaceRegistry, retireUnownedBranch, sideProjectKey, sideSegment, subtreeEdges } from './lib/delete.js'
 
 /**
@@ -41,6 +43,10 @@ const FOREST_ROUTE = '/api/conversation-tree/forest'
 const SUMMARY_ROUTE = '/api/conversation-tree/summarize'
 /** Route: delete one branch subtree. */
 const DELETE_ROUTE = '/api/conversation-tree/delete'
+/** Route: name one tree node. */
+const NOTE_ROUTE = '/api/conversation-tree/note'
+/** Route: compare two or more conversations. */
+const COMPARE_ROUTE = '/api/conversation-tree/compare'
 
 export const inject = ['llm', 'sessions', 'connection', 'agents', 'sessionProjections']
 
@@ -111,6 +117,24 @@ export function apply(ctx) {
     }),
     'conversation-tree: delete',
   )
+  ctx.effect(
+    () => ctx.connection.fetch.register({
+      path: NOTE_ROUTE,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: (request) => serializeMutation(() => saveNodeNote(ctx, request)),
+    }),
+    'conversation-tree: note',
+  )
+  ctx.effect(
+    () => ctx.connection.fetch.register({
+      path: COMPARE_ROUTE,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: (request) => compareSessions(ctx, request),
+    }),
+    'conversation-tree: compare',
+  )
   // Repair ghost workspace/archive entries left by earlier deletions. This is
   // intentionally fire-and-forget: a storage fault must not stop the routes
   // from registering.
@@ -168,6 +192,11 @@ export const __test = {
   ownCounts,
   augmentNodeStats,
   statsNodeSelection,
+  saveNodeNote,
+  compareSessions,
+  readSide,
+  lastText,
+  countToolCalls,
   loadStatsCache,
   persistStats,
   pruneStatsCache,

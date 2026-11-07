@@ -25,6 +25,8 @@ window.__ModuleLoader__.load({
     const FOREST_ROUTE = '/api/conversation-tree/forest'
     const SUMMARY_ROUTE = '/api/conversation-tree/summarize'
     const DELETE_ROUTE = '/api/conversation-tree/delete'
+    const NOTE_ROUTE = '/api/conversation-tree/note'
+    const COMPARE_ROUTE = '/api/conversation-tree/compare'
     const STYLE_ID = 'dsh-conversation-tree/ui'
     const TOAST_MS = 4200
     /** Every conversation tree is a panel on the shared canvas. */
@@ -54,6 +56,21 @@ window.__ModuleLoader__.load({
       'inspector.external': '原生分支（只读）',
       'inspector.relinked': '原来源对话已删除，此分支已提升到上一级',
       'inspector.detached': '原来源对话已删除，此对话现在是一棵树的根',
+      'note.label': '备注',
+      'note.placeholder': '给这条分支起个名字',
+      'note.saved': '备注已保存',
+      'compare.action': '对比',
+      'compare.title': '对比对话',
+      'compare.subtitle': '两边各自做到哪一步、花了多少',
+      'compare.pick': '再点一个节点进行对比（Esc 取消）',
+      'compare.hint': 'Shift + 点击另一个节点可直接对比',
+      'compare.turns': '{turns} 轮 · {steps} 步',
+      'compare.tools': '{count} 次工具调用',
+      'compare.usage': '用量',
+      'compare.model': '模型',
+      'compare.last': '最后一条结论',
+      'compare.empty': '这条分支还没有自己的回复',
+      'compare.close': '关闭',
       'inspector.model': '模型',
       'inspector.provider': '提供方',
       'inspector.reasoning': '推理',
@@ -209,6 +226,21 @@ window.__ModuleLoader__.load({
       'inspector.external': 'Native fork (read only)',
       'inspector.relinked': 'Its source conversation was deleted; this branch moved up one level',
       'inspector.detached': 'Its source conversation was deleted; this conversation is now a tree root',
+      'note.label': 'Note',
+      'note.placeholder': 'Name this branch',
+      'note.saved': 'Note saved',
+      'compare.action': 'Compare',
+      'compare.title': 'Compare conversations',
+      'compare.subtitle': 'How far each side got, and what it cost',
+      'compare.pick': 'Pick another node to compare (Esc cancels)',
+      'compare.hint': 'Shift-click another node to compare',
+      'compare.turns': '{turns} turns · {steps} steps',
+      'compare.tools': '{count} tool calls',
+      'compare.usage': 'Usage',
+      'compare.model': 'Model',
+      'compare.last': 'Last conclusion',
+      'compare.empty': 'This branch has not answered yet',
+      'compare.close': 'Close',
       'inspector.model': 'Model',
       'inspector.provider': 'Provider',
       'inspector.reasoning': 'Reasoning',
@@ -723,6 +755,66 @@ window.__ModuleLoader__.load({
         closeDialog() {
           set({ dialog: null })
         },
+        /**
+         * Patch one Session's projection wherever it is cached.
+         *
+         * A note edit must not refetch a forest: the node exists in whichever
+         * tree or component happens to be loaded, and both views read the same
+         * field.
+         */
+        patchNode(sessionId, patch) {
+          if (typeof sessionId !== 'string' || sessionId === '') return false
+          let touched = false
+          const trees = { ...state.trees }
+          for (const [key, tree] of Object.entries(trees)) {
+            if (!Array.isArray(tree?.nodes) || !tree.nodes.some((node) => node?.id === sessionId)) continue
+            trees[key] = {
+              ...tree,
+              nodes: tree.nodes.map((node) => (node?.id === sessionId ? { ...node, ...patch } : node)),
+            }
+            touched = true
+          }
+          const forests = { ...state.forests }
+          for (const [key, forest] of Object.entries(forests)) {
+            if (!Array.isArray(forest?.components)) continue
+            let changed = false
+            const components = forest.components.map((component) => {
+              if (!Array.isArray(component?.nodes) || !component.nodes.some((node) => node?.id === sessionId)) return component
+              changed = true
+              return {
+                ...component,
+                nodes: component.nodes.map((node) => (node?.id === sessionId ? { ...node, ...patch } : node)),
+              }
+            })
+            if (changed) {
+              forests[key] = { ...forest, components }
+              touched = true
+            }
+          }
+          if (touched) set({ trees, forests })
+          return touched
+        },
+        /** Persist one node's note; the response is the trimmed value. */
+        async saveNote(sessionId, note) {
+          const body = await requestJson(NOTE_ROUTE, {
+            method: 'POST',
+            body: JSON.stringify({ sessionId, note }),
+          })
+          const saved = typeof body?.note === 'string' ? body.note : note
+          this.patchNode(sessionId, { note: saved })
+          return saved
+        },
+        /** Fetch two sides and open the comparison dialog. */
+        async compare(ids) {
+          const body = await requestJson(COMPARE_ROUTE, {
+            method: 'POST',
+            body: JSON.stringify({ ids }),
+          })
+          const sides = Array.isArray(body?.sides) ? body.sides : []
+          if (sides.length < 2) throw new Error(t('compare.empty'))
+          this.openDialog({ kind: 'compare', sides })
+          return sides
+        },
       }
     }
 
@@ -858,6 +950,12 @@ window.__ModuleLoader__.load({
       const session = sessionOf(sessions, node.id)
       const title = session?.title || session?.displayTitle || node.title
       return typeof title === 'string' && title.trim() !== '' ? title.trim() : t('node.untitled')
+    }
+
+    /** The user's own name for one node, or an empty string. */
+    function noteOf(node) {
+      const note = node?.note
+      return typeof note === 'string' ? note.trim() : ''
     }
 
     /** The shortest title that still distinguishes one branch card from its siblings. */
@@ -1073,7 +1171,8 @@ window.__ModuleLoader__.load({
           tree,
           root: model.root,
           rows: model.rows,
-          title: model.root.title,
+          // A root has no card of its own: its note is the panel title.
+          title: noteOf(model.root.node) || model.root.title,
           branchCount: model.rows.length,
           current: visibleNodes.some((node) => node.id === currentSessionId),
           running: visibleNodes.some((node) => sessionOf(sessions, node.id)?.running === true),
@@ -1430,7 +1529,7 @@ window.__ModuleLoader__.load({
       const matches = new Set()
       if (query !== '') {
         for (const node of tree.nodes) {
-          const haystack = `${titleOfNode(sessions, node)} ${node.snippet ?? ''}`.toLowerCase()
+          const haystack = `${titleOfNode(sessions, node)} ${noteOf(node)} ${node.snippet ?? ''}`.toLowerCase()
           if (haystack.includes(query)) matches.add(node.id)
         }
       }
@@ -2100,7 +2199,12 @@ window.__ModuleLoader__.load({
       else if (entry.pending) meta.push(t('node.pending'))
       if (entry.collapsed && entry.hiddenCount > 0) meta.push(t('node.hiddenCount', { count: entry.hiddenCount }))
       if (entry.usage !== null) meta.push(t('node.tokenShort', { count: formatCompact(entry.usage.total) }))
-      const label = meta.length === 0 ? entry.title : `${entry.title} · ${meta.join(' · ')}`
+      const note = noteOf(entry.node)
+      // The note is the user's own name for this branch; at a glance on the
+      // canvas that is worth more than the turn and token counters, which stay
+      // in the tooltip and the inspector.
+      const detail = note === '' ? meta.join(' · ') : note
+      const label = [entry.title, note, ...meta].filter((part) => part !== '').join(' · ')
       const className = [
         'ct-node',
         selected ? 'ct-node-selected' : '',
@@ -2122,7 +2226,7 @@ window.__ModuleLoader__.load({
         },
         role: 'button',
         tabIndex: -1,
-        onClick: () => onSelect(entry.id),
+        onClick: (event) => onSelect(entry.id, event),
         onDoubleClick: () => onOpen(entry),
         'aria-pressed': selected,
         'aria-label': label,
@@ -2131,7 +2235,7 @@ window.__ModuleLoader__.load({
         h('span', { className: `ct-node-dot ct-node-dot-${status.key}`, 'aria-hidden': true }),
         h('span', { className: 'ct-node-copy' },
           h('span', { className: 'ct-node-title' }, entry.displayTitle),
-          h('span', { className: 'ct-node-meta' }, meta.join(' · '))),
+          h('span', { className: note === '' ? 'ct-node-meta' : 'ct-node-meta ct-node-note' }, detail)),
         entry.hasChildren
           ? h('span', {
             className: `ct-node-toggle${entry.collapsed ? ' ct-node-toggle-closed' : ''}`,
@@ -2149,7 +2253,23 @@ window.__ModuleLoader__.load({
           : null)
     }
 
-    function NodeInspector({ entry, graph, onSelect, onOpen, onBring, onArchive, onDelete, onUnarchive, useSessionAccess }) {
+    function NodeInspector({ entry, graph, onSelect, onOpen, onBring, onArchive, onDelete, onUnarchive, onNote, onCompare, useSessionAccess }) {
+      const [draft, setDraft] = React.useState(() => noteOf(entry.node))
+      const [saving, setSaving] = React.useState(false)
+      React.useEffect(() => {
+        setDraft(noteOf(entry.node))
+      }, [entry.id, entry.node.note])
+      async function commitNote() {
+        if (typeof onNote !== 'function' || saving) return
+        const next = draft.trim()
+        if (next === noteOf(entry.node)) return
+        setSaving(true)
+        try {
+          await onNote(entry.id, next)
+        } finally {
+          setSaving(false)
+        }
+      }
       const canArchive = typeof useSessionAccess === 'function'
         ? useSessionAccess(entry.id, 'workspace/archiveSession')
         : true
@@ -2210,7 +2330,34 @@ window.__ModuleLoader__.load({
               onClick: () => onBring(entry.id),
               disabled: !canBring,
               title: t('dock.title'),
-            }, h(IconBring, { size: 14 }), h('span', null, t('dock.bring')))),
+            }, h(IconBring, { size: 14 }), h('span', null, t('dock.bring'))),
+            h('button', {
+              type: 'button',
+              className: 'ct-btn-secondary',
+              onClick: () => onCompare(entry.id),
+              title: t('compare.hint'),
+            }, h('span', null, t('compare.action')))),
+
+          h('div', { className: 'ct-note' },
+            h('input', {
+              className: 'ct-note-input',
+              value: draft,
+              maxLength: 40,
+              placeholder: t('note.placeholder'),
+              'aria-label': t('note.label'),
+              disabled: saving,
+              onChange: (event) => setDraft(event.target.value),
+              onBlur: () => { void commitNote() },
+              onKeyDown: (event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  event.currentTarget.blur()
+                } else if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setDraft(noteOf(entry.node))
+                }
+              },
+            })),
 
           h('section', { className: 'ct-section' },
             h('div', { className: 'ct-section-label' }, t('inspector.source')),
@@ -2491,6 +2638,9 @@ window.__ModuleLoader__.load({
       const [collapsedPanels, setCollapsedPanels] = React.useState(() => new Set())
       const [collapsedNodes, setCollapsedNodes] = React.useState(() => new Set())
       const [selectedId, setSelectedId] = React.useState(null)
+      // Armed by the inspector's Compare button: the next node becomes the
+      // other side. Shift-click skips the arming step.
+      const [comparePick, setComparePick] = React.useState(false)
       const [center, setCenter] = React.useState(null)
       const centerSeq = React.useRef(0)
       const hostRef = React.useRef(null)
@@ -2516,6 +2666,7 @@ window.__ModuleLoader__.load({
         setCollapsedPanels(new Set())
         setCollapsedNodes(new Set())
         setSelectedId(null)
+        setComparePick(false)
         setCenter(null)
       }, [workspace.key])
 
@@ -2587,6 +2738,31 @@ window.__ModuleLoader__.load({
         setSelectedId(id)
         setCenter({ id, seq: centerSeq.current })
       }, [])
+
+      /** Open the comparison dialog for two nodes. */
+      const startCompare = React.useCallback(async (left, right) => {
+        setComparePick(false)
+        if (typeof left !== 'string' || typeof right !== 'string' || left === '' || left === right) return
+        try {
+          await store.compare([left, right])
+        } catch (failure) {
+          store.toast('error', friendlyError(failure))
+        }
+      }, [])
+
+      /** Select one node; Shift (or an armed pick) turns the click into a compare. */
+      const selectNode = React.useCallback((nodeId, event) => {
+        if (typeof nodeId !== 'string' || nodeId === '') return
+        if (comparePick) {
+          void startCompare(selectedId ?? nodeId, nodeId)
+          return
+        }
+        if (event?.shiftKey === true && selectedId !== null && selectedId !== nodeId) {
+          void startCompare(selectedId, nodeId)
+          return
+        }
+        setSelectedId(nodeId)
+      }, [comparePick, selectedId, startCompare])
 
       React.useEffect(() => {
         if (located.size === 0) {
@@ -2785,6 +2961,7 @@ window.__ModuleLoader__.load({
           h('p', null, emptyText))
         : null
       const notes = []
+      if (comparePick) notes.push(t('compare.pick'))
       if (query.trim() !== '' && matchedCount === 0 && sections.length > 0) notes.push(t('forest.noMatch'))
       if (truncated) notes.push(t('forest.truncated', { count: forest?.memberCount ?? projection.conversationCount }))
       if (forest?.statsTruncated === true) notes.push(t('forest.statsPartial'))
@@ -2802,10 +2979,13 @@ window.__ModuleLoader__.load({
                 compact,
                 selectedId: selectedEntry?.id ?? null,
                 center,
-                onSelect: setSelectedId,
+                onSelect: selectNode,
                 onOpen: openEntry,
                 onFocus: focusNode,
-                onEscape: () => setQuery(''),
+                onEscape: () => {
+                  setQuery('')
+                  setComparePick(false)
+                },
                 onToggleCollapse: toggleNode,
                 onTogglePanel: togglePanel,
               })
@@ -2829,6 +3009,18 @@ window.__ModuleLoader__.load({
               }),
               onArchive: requestArchive,
               onDelete: requestDelete,
+              onNote: async (nodeId, note) => {
+                try {
+                  await store.saveNote(nodeId, note)
+                  store.toast('success', t('note.saved'))
+                } catch (failure) {
+                  store.toast('error', friendlyError(failure))
+                }
+              },
+              onCompare: (nodeId) => {
+                if (selectedId !== null && selectedId !== nodeId) void startCompare(selectedId, nodeId)
+                else setComparePick(true)
+              },
               onUnarchive: (nodeId) => {
                 void runUnarchive(nodeId, sessionId).catch((failure) => store.toast('error', friendlyError(failure)))
               },
@@ -2911,6 +3103,37 @@ window.__ModuleLoader__.load({
 
     // ---------------------------------------------------------------- overlays
 
+    /** One side's column: what it did, what it cost, how it ended. */
+    function CompareSide({ side, sessions }) {
+      const usage = tokenStatsFromCounts(side.usage)
+      const title = titleOfNode(sessions, { id: side.id, title: side.title })
+      const model = side.model === null || typeof side.model !== 'object' ? null : side.model
+      return h('section', { className: 'ct-compare-col' },
+        h('h3', { className: 'ct-compare-title', title }, title),
+        h('div', { className: 'ct-compare-facts' },
+          h('span', null, t('compare.turns', { turns: side.turns ?? 0, steps: side.steps ?? 0 })),
+          h('span', null, t('compare.tools', { count: side.toolCalls ?? 0 })),
+          usage !== null ? h('span', null, `${formatCompact(usage.total)} tok`) : null,
+          model !== null ? h('span', { className: 'ct-compare-model' }, `${model.provider ?? ''} / ${model.model ?? ''}`) : null),
+        h('div', { className: 'ct-compare-label' }, t('compare.last')),
+        side.lastAssistant !== ''
+          ? h('p', { className: 'ct-compare-text' }, side.lastAssistant)
+          : h('p', { className: 'ct-compare-empty' }, t('compare.empty')))
+    }
+
+    function CompareDialog({ dialog, sessions }) {
+      const sides = Array.isArray(dialog.sides) ? dialog.sides : []
+      return h(DialogShell, {
+        title: t('compare.title'),
+        subtitle: t('compare.subtitle'),
+        onClose: () => store.closeDialog(),
+        wide: true,
+        footer: h(ActionButton, { onClick: () => store.closeDialog() }, t('compare.close')),
+      },
+        h('div', { className: 'ct-compare' },
+          sides.map((side) => h(CompareSide, { key: side.id, side, sessions }))))
+    }
+
     function Overlays({ useSessions, useWorkspaces }) {
       const state = useStore()
       const sessions = useSessions((value) => value)
@@ -2932,6 +3155,13 @@ window.__ModuleLoader__.load({
             dialog: state.dialog,
             sessions,
             archived,
+          })
+          : null,
+        state.dialog?.kind === 'compare'
+          ? h(CompareDialog, {
+            key: state.dialog.id,
+            dialog: state.dialog,
+            sessions,
           })
           : null)
     }
@@ -3446,6 +3676,8 @@ window.__ModuleLoader__.load({
         text-overflow: ellipsis;
         font-variant-numeric: tabular-nums;
       }
+      /* The user's name for a branch sits where the counters were. */
+      .ct-node-note { color: var(--dsw-alias-label-primary); }
       .ct-empty-note {
         position: absolute;
         color: var(--dsw-alias-label-secondary);
@@ -3539,7 +3771,27 @@ window.__ModuleLoader__.load({
       .ct-status-dot-running { background: var(--dsw-alias-state-success-primary); }
       .ct-status-dot-pending { background: var(--dsw-alias-state-warn-primary); }
       .ct-status-dot-archived { background: var(--dsw-alias-label-secondary); }
-      .ct-side-actions { margin-top: 14px; display: flex; gap: 6px; }
+      .ct-side-actions { margin-top: 14px; display: flex; gap: 6px; flex-wrap: wrap; }
+      .ct-note { margin-top: 10px; }
+      .ct-note-input {
+        width: 100%;
+        height: 30px;
+        padding: 0 9px;
+        box-sizing: border-box;
+        border: 1px solid var(--dsw-alias-border-l1);
+        border-radius: 6px;
+        background: var(--dsw-alias-bg-layer-1);
+        color: var(--dsw-alias-label-primary);
+        font: inherit;
+        font-size: 12.5px;
+        line-height: 1.4;
+      }
+      .ct-note-input::placeholder { color: var(--dsw-alias-label-tertiary); }
+      .ct-note-input:focus-visible {
+        outline: 2px solid var(--dsw-alias-brand-primary);
+        outline-offset: 1px;
+        border-color: transparent;
+      }
       .ct-open-btn {
         flex: 1 1 auto;
         min-width: 0;
@@ -3789,6 +4041,54 @@ window.__ModuleLoader__.load({
         overflow: hidden;
       }
       .ct-dialog-wide { width: min(680px, 100%); }
+      .ct-compare {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+      .ct-compare-col {
+        min-width: 0;
+        padding: 12px;
+        border: 1px solid var(--dsw-alias-border-l1);
+        border-radius: 8px;
+        background: var(--dsw-alias-bg-layer-1);
+      }
+      .ct-compare-title {
+        margin: 0 0 8px;
+        color: var(--dsw-alias-label-primary);
+        font-size: 13.5px;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+      }
+      .ct-compare-facts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 10px;
+        color: var(--dsw-alias-label-secondary);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      .ct-compare-model { overflow-wrap: anywhere; }
+      .ct-compare-label {
+        margin: 12px 0 4px;
+        color: var(--dsw-alias-label-tertiary);
+        font-size: 11.5px;
+      }
+      .ct-compare-text {
+        margin: 0;
+        max-height: 220px;
+        overflow: auto;
+        color: var(--dsw-alias-label-primary);
+        font-size: 12.5px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .ct-compare-empty {
+        margin: 0;
+        color: var(--dsw-alias-label-tertiary);
+        font-size: 12.5px;
+      }
       .ct-dialog-head {
         flex: none;
         display: flex;
@@ -4250,6 +4550,8 @@ window.__ModuleLoader__.load({
         DialogShell,
         TargetDialog,
         ConfirmDialog,
+        CompareSide,
+        CompareDialog,
         Overlays,
         store,
       },

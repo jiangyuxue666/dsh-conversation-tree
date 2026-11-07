@@ -111,6 +111,7 @@ const {
   BranchAction,
   DialogShell,
   Overlays,
+  CompareSide,
   store,
 } = plugin.__test
 
@@ -656,4 +657,25 @@ test('trimCache keeps the newest entries and leaves a small cache alone', () => 
   // Below the limit the same object comes back, so the store does not churn.
   assert.equal(trimCache(record, 5), record)
   assert.deepEqual(trimCache({}, 3), {})
+})
+
+test('a comparison column renders one side without throwing', () => {
+  const h = ReactStub.createElement
+  assert.doesNotThrow(() => render(h(CompareSide, {
+    side: {
+      id: 'b',
+      title: '分支 B',
+      turns: 3,
+      steps: 5,
+      toolCalls: 2,
+      usage: { uncachedInputTokens: 100, outputTokens: 50, cacheReadTokens: 900, cacheWriteTokens: 0 },
+      model: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' },
+      lastAssistant: '先说结论：方案 B 走通了。',
+    },
+    sessions,
+  })))
+  assert.doesNotThrow(() => render(h(CompareSide, {
+    side: { id: 'c', title: '', turns: 0, steps: 0, toolCalls: 0, usage: {}, model: null, lastAssistant: '' },
+    sessions,
+  })))
 })
