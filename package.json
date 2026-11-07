@@ -1,6 +1,6 @@
 {
   "name": "@jiangyuxue666/dsh-conversation-tree",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "type": "module",
   "description": "A workspace-wide conversation-tree view for DeepSeek Harness: every conversation and every branch in one page, with its source turn, its own usage, bring-back, archive and subtree deletion.",
   "keywords": [

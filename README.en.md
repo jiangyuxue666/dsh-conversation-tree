@@ -14,10 +14,14 @@ A web plugin for DeepSeek Harness. It draws every conversation of a workspace, t
 - **Workspace canvas** — every conversation is one tree, laid out on a shared canvas that pans and zooms; the current conversation is pinned first and highlighted.
 - **Branching** — `Tree branch` under any completed turn creates a child session that inherits the context up to that turn and records its source conversation, turn and branch-point excerpt.
 - **Node details** — source, branch turn, depth, the conversation's own turns and steps, token breakdown, cache hit rate and model.
-- **Notes** — name any conversation or branch; the name shows on the node (a root shows it on its own node) and search matches it. Notes live in the plugin's registry, never in the session log.
-- **Compare** — select a node, press `Compare` in the side panel and pick another (or `Shift`-click one) to see turns, steps, tool calls, usage, model and the last conclusion side by side.
+- **Notes** — name any conversation or branch; the name shows on the node (a root shows it on its own node) and search matches it. Notes live in the plugin's registry, never in the session log. A fresh branch starts with the message it forked at as its note.
+- **Compare** — select a node, press `Compare` in the side panel and pick another (or `Shift`-click one) to see turns, steps, tool calls, usage, model, the prompts each side opened with and the last conclusion side by side.
 - **Bring back** — compresses the turns a conversation produced itself (skipping the inherited fork prefix) into a summary, offers an editable preview, then queues it into a target conversation.
-- **Archive and delete** — in the side panel; deletion is limited to branches created by this plugin.
+- **Branch from the tree** — `Branch from here` forks the newest completed turn of the conversation you are reading, without going back to the chat page.
+- **Where this tree got to** — one model call over the whole tree: each branch's conclusion, where it stalled, and which one is worth keeping. Only runs when you press it.
+- **Unread dot** — a branch that moved on since you last looked at it shows a dot.
+- **Export** — the whole tree as a Markdown outline, with titles and notes.
+- **Archive and delete** — in the side panel; deletion is limited to branches created by this plugin, and waits ten seconds behind an undo.
 - **Search and keyboard** — cross-tree matching on titles and branch-point excerpts, centring the first hit; arrow keys, `Enter`, `Home`/`End`, `+`/`-` and `f`.
 
 ## Requirements
@@ -95,6 +99,7 @@ Layout:
 - `lib/session.js` — session log access, pending promotion, ancestor recovery
 - `lib/branch.js` — branch creation
 - `lib/summarize.js` — bring-back summaries
+- `lib/tree-summary.js` — the whole-tree digest
 - `lib/delete.js` — subtree deletion, including platform branches
 - `lib/stats.js` — token and turn statistics with a persistent cache
 - `lib/models.js` — model routes and presets
@@ -111,6 +116,8 @@ Host routes:
 - `POST /api/conversation-tree/delete`
 - `POST /api/conversation-tree/note`
 - `POST /api/conversation-tree/compare`
+- `POST /api/conversation-tree/peek`
+- `POST /api/conversation-tree/tree-summary`
 
 ## Compatibility
 

@@ -8,7 +8,7 @@ const home = await mkdtemp(join(tmpdir(), 'dsh-conversation-tree-'))
 const previousHome = process.env.DSH_HOME
 process.env.DSH_HOME = home
 const module = await import(`./index.js?host-test=${Date.now()}`)
-const { createBranch, readTree, readForest, buildTree, buildForest, ownUsage, ownCounts, cleanupWorkspaceSession, reconcileWorkspaceRegistry, retireUnownedBranch, nextBranchOrdinal, redactSecrets, summaryPrompt, sameSiteRequest, pruneDeadNodes, nearestLiveAncestor, forestMembers, registeredChildren, resetLiveSessions, assertDeleteHeader, saveNodeNote, compareSessions, lastText, countToolCalls, openingPrompts, peekSession, autoNote } = module.__test
+const { createBranch, readTree, readForest, buildTree, buildForest, ownUsage, ownCounts, cleanupWorkspaceSession, reconcileWorkspaceRegistry, retireUnownedBranch, nextBranchOrdinal, redactSecrets, summaryPrompt, sameSiteRequest, pruneDeadNodes, nearestLiveAncestor, forestMembers, registeredChildren, resetLiveSessions, assertDeleteHeader, saveNodeNote, compareSessions, lastText, countToolCalls, openingPrompts, peekSession, autoNote, latestBranchBoundary, treePrompt, digestText } = module.__test
 
 after(async () => {
   if (previousHome === undefined) delete process.env.DSH_HOME
@@ -557,13 +557,14 @@ test('apply registers every route the client calls', () => {
     sessions: { get() { return undefined } },
   }
   module.apply(ctx)
-  assert.equal(paths.length, 8)
+  assert.equal(paths.length, 9)
   assert.ok(paths.includes('POST /api/conversation-tree/forest'))
   assert.ok(paths.includes('POST /api/conversation-tree/branch'))
   assert.ok(paths.includes('GET /api/conversation-tree/tree'))
   assert.ok(paths.includes('POST /api/conversation-tree/note'))
   assert.ok(paths.includes('POST /api/conversation-tree/compare'))
   assert.ok(paths.includes('POST /api/conversation-tree/peek'))
+  assert.ok(paths.includes('POST /api/conversation-tree/tree-summary'))
 })
 
 test('nextBranchOrdinal takes the highest used sibling number', () => {
@@ -891,6 +892,40 @@ test('lastText reads the newest message of one role', () => {
   assert.equal(lastText(events, 'assistant/message'), '第一答')
   assert.equal(lastText([], 'assistant/message'), '')
   assert.equal(countToolCalls([{ type: 'tool/call' }, { type: 'tool/call' }], 1), 1)
+})
+
+test('latestBranchBoundary finds the newest completed turn after the prefix', () => {
+  const events = [
+    { seq: 0, type: 'turn/end' },
+    { seq: 1, type: 'turn/start' },
+    { seq: 2, type: 'assistant/message' },
+    { seq: 3, type: 'turn/end' },
+    { seq: 4, type: 'turn/start' },
+  ]
+  assert.equal(latestBranchBoundary(events, 0), 3)
+  assert.equal(latestBranchBoundary(events, 1), 3)
+  // Still running: the open turn is not a branch point.
+  assert.equal(latestBranchBoundary([{ type: 'turn/start' }], 0), -1)
+  assert.equal(latestBranchBoundary(null), -1)
+})
+
+test('a tree summary prompt keeps every branch as data', () => {
+  const sides = [
+    { id: 'a', title: '方案 A', turns: 3, steps: 7, prompts: ['把样式改成深色'], lastAssistant: '改好了，屏幕截图见附件' },
+    { id: 'b', title: '方案 B', turns: 1, steps: 2, prompts: [], lastAssistant: 'sk-abcdefghijklmnopqrstuvwxyz' },
+  ]
+  const prompt = treePrompt(sides, 4)
+  assert.ok(prompt.includes('<record>'))
+  assert.ok(prompt.includes('## 1. 方案 A'))
+  assert.ok(prompt.includes('轮次：3，步数：7'))
+  assert.ok(prompt.includes('开头问：把样式改成深色'))
+  assert.ok(prompt.includes('最后结论：改好了'))
+  // Covered by the data boundary, and secrets never reach the prompt.
+  assert.ok(prompt.includes('只列出前 2 个'))
+  assert.ok(prompt.includes('[redacted-key]'))
+  assert.ok(!prompt.includes('sk-abcdefghijklmnopqrstuvwxyz'))
+  assert.equal(digestText('  很多   空白  '), '很多 空白')
+  assert.ok(digestText('一'.repeat(500), 10).endsWith('…'))
 })
 
 test('a comparison lists the prompts each side opened with', async () => {

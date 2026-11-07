@@ -28,6 +28,7 @@ window.__ModuleLoader__.load({
     const NOTE_ROUTE = '/api/conversation-tree/note'
     const COMPARE_ROUTE = '/api/conversation-tree/compare'
     const PEEK_ROUTE = '/api/conversation-tree/peek'
+    const TREE_SUMMARY_ROUTE = '/api/conversation-tree/tree-summary'
     const STYLE_ID = 'dsh-conversation-tree/ui'
     const TOAST_MS = 4200
     /** Every conversation tree is a panel on the shared canvas. */
@@ -108,6 +109,8 @@ window.__ModuleLoader__.load({
       'dock.title': '把这条对话的讨论带回另一条对话',
       'branch.action': '对话树分支',
       'branch.creating': '创建中…',
+      'branch.here': '从这里再分一支',
+      'branch.hereHint': '把这条对话最后完成的一轮再分出一条新分支',
       'branch.hint': '从这个已完成轮次创建一条会进入对话树的分支',
       'head.titleFallback': '对话树',
       'head.refresh': '刷新',
@@ -119,6 +122,14 @@ window.__ModuleLoader__.load({
       'head.hideArchived': '隐藏已归档',
       'head.focus': '只看当前这棵树',
       'head.unfocus': '显示同一工作区的其它树',
+      'head.export': '导出 Markdown 提纲',
+      'notice.exported': '已导出 {count} 棵树',
+      'head.summarize': '总结这棵树',
+      'summary.title': '这棵树走到哪了',
+      'summary.subtitle': '读完这棵树的分支，给一段话：哪条走通了、哪条可以放',
+      'summary.loading': '正在读这棵树…',
+      'summary.scope': '读了 {branches} 条分支（共 {total} 条）',
+      'summary.truncated': '回答被截断了，只保留前半段。',
       'head.orderRecent': '按最近活动排序（点一下改成按创建时间）',
       'head.orderCreated': '按创建时间排序（点一下改回按最近活动）',
       'head.forestCount': '{conversations} 个对话 · {branches} 条分支',
@@ -175,6 +186,9 @@ window.__ModuleLoader__.load({
       'notice.deleting': '正在删除 {count} 个对话…',
       'notice.archived': '已归档 {count} 个对话',
       'notice.deleted': '已删除 {count} 个对话',
+      'notice.deletePending': '{count} 个对话将在 10 秒后删除',
+      'notice.undo': '撤销',
+      'notice.deleteCancelled': '已取消删除，什么都没动',
       'notice.unarchived': '已取消归档',
       'confirm.delete.title': '删除这棵子树？',
       'confirm.delete.body': '「{title}」及其下的所有分支会被永久删除，无法恢复。',
@@ -289,6 +303,8 @@ window.__ModuleLoader__.load({
       'dock.title': 'Bring this conversation’s discussion back into another',
       'branch.action': 'Tree branch',
       'branch.creating': 'Creating…',
+      'branch.here': 'Branch from here',
+      'branch.hereHint': 'Fork the newest completed turn of this conversation',
       'branch.hint': 'Create a branch that joins the conversation tree at this completed Turn',
       'head.titleFallback': 'Conversation tree',
       'head.showArchived': 'Show archived',
@@ -300,6 +316,14 @@ window.__ModuleLoader__.load({
       'head.hideArchived': 'Hide archived',
       'head.focus': 'Show only this tree',
       'head.unfocus': 'Show the other trees of this Workspace',
+      'head.export': 'Export as a Markdown outline',
+      'notice.exported': 'Exported {count} tree(s)',
+      'head.summarize': 'Summarize this tree',
+      'summary.title': 'Where this tree got to',
+      'summary.subtitle': 'One page over every branch: which one worked, which can go',
+      'summary.loading': 'Reading the tree…',
+      'summary.scope': 'Read {branches} of {total} branches',
+      'summary.truncated': 'The answer was cut off; only the first part is shown.',
       'head.orderRecent': 'Sorted by recent activity — switch to creation order',
       'head.orderCreated': 'Sorted by creation order — switch back to recent activity',
       'head.forestCount': '{conversations} conversations · {branches} branches',
@@ -356,6 +380,9 @@ window.__ModuleLoader__.load({
       'notice.deleting': 'Deleting {count} conversation(s)…',
       'notice.archived': 'Archived {count} conversation(s)',
       'notice.deleted': 'Deleted {count} conversation(s)',
+      'notice.deletePending': '{count} conversation(s) will be deleted in 10 seconds',
+      'notice.undo': 'Undo',
+      'notice.deleteCancelled': 'Deletion cancelled — nothing was removed',
       'notice.unarchived': 'Unarchived',
       'confirm.delete.title': 'Delete this subtree?',
       'confirm.delete.body': '「{title}」 and every branch below it will be permanently deleted. This cannot be undone.',
@@ -524,6 +551,20 @@ window.__ModuleLoader__.load({
       return h(Svg, { size, className },
         h('circle', { cx: '12', cy: '12', r: '4.2' }),
         h('path', { d: 'M12 4v2.4M12 17.6V20M4 12h2.4M17.6 12H20' }))
+    }
+
+    function IconDownload({ size = 15, className }) {
+      return h(Svg, { size, className },
+        h('path', { d: 'M12 4v10' }),
+        h('path', { d: 'm8 10.5 4 4 4-4' }),
+        h('path', { d: 'M5 19h14' }))
+    }
+
+    function IconSummary({ size = 15, className }) {
+      return h(Svg, { size, className },
+        h('path', { d: 'M5 4.5h9l4.5 4.5v10.5H5z' }),
+        h('path', { d: 'M13.5 4.5V9H18' }),
+        h('path', { d: 'M8 13h8M8 16.5h5' }))
     }
 
     function IconSearch({ size = 15, className }) {
@@ -761,13 +802,13 @@ window.__ModuleLoader__.load({
             forestEpoch: state.forestEpoch + 1,
           })
         },
-        toast(kind, text) {
+        toast(kind, text, action = null, ttl = TOAST_MS) {
           state.toastSeq += 1
           window.clearTimeout(toastTimer)
-          set({ toast: { kind, text, seq: state.toastSeq } })
+          set({ toast: { kind, text, seq: state.toastSeq, action } })
           toastTimer = window.setTimeout(() => {
             if (state.toast?.seq === state.toastSeq) set({ toast: null })
-          }, TOAST_MS)
+          }, ttl)
         },
         setNotice(sessionId, notice, ttl = 0) {
           if (typeof sessionId !== 'string' || sessionId === '') return
@@ -1427,9 +1468,42 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** How long a confirmed deletion waits for the undo. */
+    const UNDO_DELETE_MS = 10_000
+
+    /**
+     * Resolve true when the delay elapses, false when the undo is used.
+     *
+     * The toast carries the undo, so the window is visible rather than a
+     * hidden grace period; closing the page during it simply deletes nothing.
+     */
+    function deleteWindow(count) {
+      return new Promise((resolve) => {
+        let settled = false
+        const finish = (proceed) => {
+          if (settled) return
+          settled = true
+          window.clearTimeout(timer)
+          resolve(proceed)
+        }
+        const timer = window.setTimeout(() => finish(true), UNDO_DELETE_MS)
+        store.toast('info', t('notice.deletePending', { count }), {
+          label: t('notice.undo'),
+          onClick: () => finish(false),
+        }, UNDO_DELETE_MS + 1000)
+      })
+    }
+
     async function runDelete(tree, nodeId, currentSessionId, fallbackSessionId = null) {
       const subtree = subtreeOf(tree, nodeId)
       const ids = new Set(subtree.map((node) => node.id))
+      store.closeDialog()
+      // Removing a branch is the only irreversible action on this page, and it
+      // touches files on disk. Hold the request behind a ten second undo.
+      if (!await deleteWindow(ids.size)) {
+        store.toast('info', t('notice.deleteCancelled'))
+        return []
+      }
       store.setNotice(currentSessionId, {
         kind: 'working',
         text: t('notice.deleting', { count: ids.size }),
@@ -1838,6 +1912,8 @@ window.__ModuleLoader__.load({
       canFocus = false,
       focused = false,
       onToggleFocus,
+      onExport,
+      onSummarize,
     }) {
       const status = notice?.text ?? counts
       return h('header', { className: 'ct-top' },
@@ -1905,6 +1981,24 @@ window.__ModuleLoader__.load({
               title: createdOrder ? t('head.orderCreated') : t('head.orderRecent'),
               'aria-label': createdOrder ? t('head.orderCreated') : t('head.orderRecent'),
             }, h(IconSort, { size: 15 }))
+            : null,
+          typeof onExport === 'function'
+            ? h('button', {
+              type: 'button',
+              className: 'ct-icon-btn',
+              onClick: onExport,
+              title: t('head.export'),
+              'aria-label': t('head.export'),
+            }, h(IconDownload, { size: 15 }))
+            : null,
+          typeof onSummarize === 'function'
+            ? h('button', {
+              type: 'button',
+              className: 'ct-icon-btn',
+              onClick: onSummarize,
+              title: t('head.summarize'),
+              'aria-label': t('head.summarize'),
+            }, h(IconSummary, { size: 15 }))
             : null,
           h('button', {
             type: 'button',
@@ -2398,7 +2492,7 @@ window.__ModuleLoader__.load({
           : null)
     }
 
-    function NodeInspector({ entry, graph, onSelect, onOpen, onBring, onArchive, onDelete, onUnarchive, onNote, onCompare, useSessionAccess }) {
+    function NodeInspector({ entry, graph, onSelect, onOpen, onBring, onArchive, onDelete, onUnarchive, onNote, onCompare, onBranchHere, useSessionAccess }) {
       const [draft, setDraft] = React.useState(() => noteOf(entry.node))
       const [saving, setSaving] = React.useState(false)
       React.useEffect(() => {
@@ -2519,6 +2613,18 @@ window.__ModuleLoader__.load({
               onClick: () => onCompare(entry.id),
               title: t('compare.hint'),
             }, h('span', null, t('compare.action')))),
+
+          // Only the conversation being read is live in this Host; a closed
+          // branch has no agent to fork, so the action is offered where it can
+          // actually run instead of failing on click.
+          entry.current && typeof onBranchHere === 'function'
+            ? h('button', {
+              type: 'button',
+              className: 'ct-btn-secondary ct-side-wide',
+              onClick: () => onBranchHere(entry.id),
+              title: t('branch.hereHint'),
+            }, h(IconTree, { size: 14 }), h('span', null, t('branch.here')))
+            : null,
 
           h('div', { className: 'ct-note' },
             h('input', {
@@ -2824,6 +2930,54 @@ window.__ModuleLoader__.load({
      * single-tree reading order for the conversation being read, and the whole
      * Workspace stays one surface to pan, zoom, search and inspect.
      */
+    /**
+     * One conversation tree as an indented Markdown outline.
+     *
+     * Built from the payload the page already holds: exporting must not cost a
+     * request or another read of every session log.
+     */
+    function treeMarkdown(model, sessions) {
+      const nodes = Array.isArray(model?.tree?.nodes) ? model.tree.nodes : []
+      if (nodes.length === 0) return ''
+      const children = new Map()
+      for (const node of nodes) {
+        if (node.parentId === null || node.parentId === undefined) continue
+        const list = children.get(node.parentId)
+        if (list === undefined) children.set(node.parentId, [node])
+        else list.push(node)
+      }
+      const root = nodes.find((node) => node.parentId === null || node.parentId === undefined) ?? nodes[0]
+      const lines = []
+      const walk = (node, depth) => {
+        const suffix = [noteOf(node)]
+          .filter((part) => part !== '')
+          .join(' · ')
+        const title = titleOfNode(sessions, node) || node.id
+        lines.push(`${'    '.repeat(depth)}- ${title}${suffix === '' ? '' : ` — ${suffix}`}`)
+        for (const child of children.get(node.id) ?? []) walk(child, depth + 1)
+      }
+      walk(root, 0)
+      return lines.join('\n')
+    }
+
+    /** Hand a generated text file to the browser. */
+    function downloadText(name, text) {
+      try {
+        const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = name
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+        return true
+      } catch {
+        return false
+      }
+    }
+
     /**
      * When this tree first branched, for the creation-order toggle.
      *
@@ -3162,6 +3316,41 @@ window.__ModuleLoader__.load({
           branches: projection.branchCount,
         })
 
+      /** Fork the newest completed turn of this conversation, from the tree page. */
+      async function branchFromLatest(nodeId) {
+        store.setNotice(sessionId, { kind: 'working', text: t('branch.creating') })
+        try {
+          const body = await requestJson(BRANCH_ROUTE, {
+            method: 'POST',
+            body: JSON.stringify({ parentSessionId: nodeId, latest: true }),
+          })
+          const childId = typeof body?.sessionId === 'string' ? body.sessionId : ''
+          if (childId === '') throw new Error(t('error.unknown'))
+          store.invalidateTrees()
+          refreshSessionList()
+          store.toast('success', t('notice.branchCreated'))
+          await waitForSession(childId)
+          openSession(childId)
+        } catch (failure) {
+          store.toast('error', friendlyError(failure))
+        } finally {
+          store.clearNotice(sessionId)
+        }
+      }
+
+      // A tree worth reading is often a tree worth sending to someone.
+      function exportMarkdown() {        const heading = workspace.title === '' ? t('view.tree') : `${t('view.tree')} · ${workspace.title}`
+        const parts = [`# ${heading}`, '']
+        for (const item of items) parts.push(treeMarkdown(item.model, sessions), '')
+        const body = `${parts.join('\n').trimEnd()}\n`
+        const suffix = workspace.title === '' ? '' : `-${workspace.title.replace(/[\\/:*?"<>|\s]+/g, '-')}`
+        if (!downloadText(`conversation-tree${suffix}.md`, body)) {
+          store.toast('error', t('error.unknown'))
+          return
+        }
+        store.toast('success', t('notice.exported', { count: items.length }))
+      }
+
       const header = h(TreeHeader, {
         counts,
         matched: query.trim() === '' ? null : matchedCount,
@@ -3178,6 +3367,8 @@ window.__ModuleLoader__.load({
         canFocus: items.length > 1,
         focused,
         onToggleFocus: () => setFocused((value) => !value),
+        onExport: exportMarkdown,
+        onSummarize: () => store.openDialog({ kind: 'summary', sessionId }),
       })
 
       if (forest === undefined) {
@@ -3276,6 +3467,7 @@ window.__ModuleLoader__.load({
                 if (selectedId !== null && selectedId !== nodeId) void startCompare(selectedId, nodeId)
                 else setComparePick(true)
               },
+              onBranchHere: (nodeId) => { void branchFromLatest(nodeId) },
               onUnarchive: (nodeId) => {
                 void runUnarchive(nodeId, sessionId).catch((failure) => store.toast('error', friendlyError(failure)))
               },
@@ -3394,6 +3586,44 @@ window.__ModuleLoader__.load({
           sides.map((side) => h(CompareSide, { key: side.id, side, sessions }))))
     }
 
+    function TreeSummaryDialog({ dialog }) {
+      const [state, setState] = React.useState({ status: 'loading', text: '', note: '' })
+      React.useEffect(() => {
+        let alive = true
+        requestJson(TREE_SUMMARY_ROUTE, {
+          method: 'POST',
+          body: JSON.stringify({ sessionId: dialog.sessionId }),
+        }).then((body) => {
+          if (!alive) return
+          setState({
+            status: 'done',
+            text: typeof body?.summary === 'string' ? body.summary : '',
+            note: body?.truncated === true
+              ? t('summary.truncated')
+              : t('summary.scope', { branches: body?.branches ?? 0, total: body?.total ?? 0 }),
+          })
+        }).catch((failure) => {
+          if (alive) setState({ status: 'error', text: friendlyError(failure), note: '' })
+        })
+        return () => { alive = false }
+      }, [dialog.sessionId])
+      return h(DialogShell, {
+        title: t('summary.title'),
+        subtitle: t('summary.subtitle'),
+        onClose: () => store.closeDialog(),
+        footer: h(ActionButton, { onClick: () => store.closeDialog() }, t('compare.close')),
+      },
+        state.status === 'loading'
+          ? h('div', { className: 'ct-summary-loading' },
+            h(Spinner, { size: 16 }),
+            h('span', null, t('summary.loading')))
+          : state.status === 'error'
+            ? h('p', { className: 'ct-summary-error' }, state.text)
+            : h('div', null,
+              h('p', { className: 'ct-summary-text' }, state.text),
+              state.note === '' ? null : h('p', { className: 'ct-summary-note' }, state.note)))
+    }
+
     function Overlays({ useSessions, useWorkspaces }) {
       const state = useStore()
       const sessions = useSessions((value) => value)
@@ -3423,6 +3653,9 @@ window.__ModuleLoader__.load({
             dialog: state.dialog,
             sessions,
           })
+          : null,
+        state.dialog?.kind === 'summary'
+          ? h(TreeSummaryDialog, { key: state.dialog.id, dialog: state.dialog })
           : null)
     }
 
@@ -3431,7 +3664,14 @@ window.__ModuleLoader__.load({
       return h('div', { className: `ct-toast ct-toast-${tone}`, role: 'status' },
         h('span', { className: 'ct-toast-icon' },
           tone === 'error' ? h(IconAlert, { size: 16 }) : tone === 'success' ? h(IconCheck, { size: 16 }) : h(IconTree, { size: 16 })),
-        h('span', null, toast.text))
+        h('span', { className: 'ct-toast-text' }, toast.text),
+        toast.action !== null && toast.action !== undefined
+          ? h('button', {
+            type: 'button',
+            className: 'ct-toast-action',
+            onClick: () => toast.action.onClick(),
+          }, toast.action.label)
+          : null)
     }
 
     function DialogShell({ title, subtitle, children, footer, onClose, busy = false, wide = false }) {
@@ -4017,6 +4257,11 @@ window.__ModuleLoader__.load({
         overflow-y: auto;
         padding: 18px 20px 20px;
         scrollbar-width: thin;
+      }
+      .ct-side-wide {
+        width: 100%;
+        justify-content: center;
+        margin-top: 8px;
       }
       .ct-crumbs {
         display: flex;
@@ -4799,7 +5044,51 @@ window.__ModuleLoader__.load({
         font-size: 12.5px;
         line-height: 1.45;
       }
+      .ct-summary-loading {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 22px 0;
+        color: var(--dsw-alias-label-secondary);
+        font-size: 12.5px;
+      }
+      .ct-summary-text {
+        margin: 0;
+        color: var(--dsw-alias-label-primary);
+        font-size: 13px;
+        line-height: 1.7;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .ct-summary-note {
+        margin: 14px 0 0;
+        color: var(--dsw-alias-label-tertiary);
+        font-size: 11.5px;
+        line-height: 1.5;
+      }
+      .ct-summary-error {
+        margin: 0;
+        padding: 18px 0;
+        color: var(--dsw-alias-state-error-primary);
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
       .ct-toast-icon { flex: none; display: inline-flex; }
+      .ct-toast-text { flex: 1 1 auto; min-width: 0; }
+      .ct-toast-action {
+        flex: none;
+        margin-left: 4px;
+        padding: 3px 10px;
+        border: 1px solid var(--dsw-alias-border-l2);
+        border-radius: 6px;
+        background: var(--dsw-alias-bg-layer-2);
+        color: var(--dsw-alias-label-primary);
+        font: inherit;
+        font-size: 12px;
+        line-height: 1.4;
+        cursor: pointer;
+      }
+      .ct-toast-action:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
       .ct-toast-error { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 35%, transparent); }
       .ct-toast-error .ct-toast-icon { color: var(--dsw-alias-state-error-primary); }
       .ct-toast-success .ct-toast-icon { color: var(--dsw-alias-state-success-primary); }

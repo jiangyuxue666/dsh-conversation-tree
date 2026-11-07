@@ -8,9 +8,10 @@ import { STATS_CACHE, augmentNodeStats, loadStatsCache, ownCounts, ownUsage, per
 import { recoverChain } from './lib/session.js'
 import { buildForest, buildTree, forestMembers, pruneDeadHandles, readForest, readTree, registeredChildren, repairTreeRegistry, withTreeForRead } from './lib/tree.js'
 import { nearestLiveAncestor, pruneDeadNodes } from './lib/reconcile.js'
-import { branchPoint, branchTitle, autoNote, createBranch, nextBranchOrdinal, resolveBranchBoundary } from './lib/branch.js'
+import { branchPoint, branchTitle, autoNote, createBranch, latestBranchBoundary, nextBranchOrdinal, resolveBranchBoundary } from './lib/branch.js'
 import { redactSecrets, summarize, summaryPrompt } from './lib/summarize.js'
 import { saveNodeNote } from './lib/notes.js'
+import { summarizeTree, treePrompt, digestText, TREE_SYSTEM } from './lib/tree-summary.js'
 import { compareSessions, countToolCalls, lastText, openingPrompts, peekSession, readSide } from './lib/compare.js'
 import { cleanupWorkspaceSession, assertDeleteHeader, deleteSubtree, reconcileWorkspaceRegistry, retireUnownedBranch, sideProjectKey, sideSegment, subtreeEdges } from './lib/delete.js'
 
@@ -49,6 +50,8 @@ const NOTE_ROUTE = '/api/conversation-tree/note'
 const COMPARE_ROUTE = '/api/conversation-tree/compare'
 /** Route: what one conversation last said. */
 const PEEK_ROUTE = '/api/conversation-tree/peek'
+/** Route: one page of text about a whole tree. */
+const TREE_SUMMARY_ROUTE = '/api/conversation-tree/tree-summary'
 
 export const inject = ['llm', 'sessions', 'connection', 'agents', 'sessionProjections']
 
@@ -146,6 +149,15 @@ export function apply(ctx) {
     }),
     'conversation-tree: peek',
   )
+  ctx.effect(
+    () => ctx.connection.fetch.register({
+      path: TREE_SUMMARY_ROUTE,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: (request) => summarizeTree(ctx, request),
+    }),
+    'conversation-tree: tree-summary',
+  )
   // Repair ghost workspace/archive entries left by earlier deletions. This is
   // intentionally fire-and-forget: a storage fault must not stop the routes
   // from registering.
@@ -180,6 +192,7 @@ export const __test = {
   assertDeleteHeader,
   branchPoint,
   resolveBranchBoundary,
+  latestBranchBoundary,
   branchTitle,
   nextBranchOrdinal,
   redactSecrets,
@@ -204,6 +217,10 @@ export const __test = {
   augmentNodeStats,
   statsNodeSelection,
   saveNodeNote,
+  summarizeTree,
+  treePrompt,
+  digestText,
+  TREE_SYSTEM,
   compareSessions,
   peekSession,
   openingPrompts,
