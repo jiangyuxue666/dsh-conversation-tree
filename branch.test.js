@@ -8,7 +8,7 @@ const home = await mkdtemp(join(tmpdir(), 'dsh-conversation-tree-'))
 const previousHome = process.env.DSH_HOME
 process.env.DSH_HOME = home
 const module = await import(`./index.js?host-test=${Date.now()}`)
-const { createBranch, readTree, readForest, buildTree, buildForest, ownUsage, ownCounts, cleanupWorkspaceSession, reconcileWorkspaceRegistry, retireUnownedBranch, nextBranchOrdinal, redactSecrets, summaryPrompt, sameSiteRequest, pruneDeadNodes, nearestLiveAncestor, forestMembers, registeredChildren, resetLiveSessions, assertDeleteHeader, saveNodeNote, compareSessions, lastText, countToolCalls } = module.__test
+const { createBranch, readTree, readForest, buildTree, buildForest, ownUsage, ownCounts, cleanupWorkspaceSession, reconcileWorkspaceRegistry, retireUnownedBranch, nextBranchOrdinal, redactSecrets, summaryPrompt, sameSiteRequest, pruneDeadNodes, nearestLiveAncestor, forestMembers, registeredChildren, resetLiveSessions, assertDeleteHeader, saveNodeNote, compareSessions, lastText, countToolCalls, openingPrompts, peekSession, autoNote } = module.__test
 
 after(async () => {
   if (previousHome === undefined) delete process.env.DSH_HOME
@@ -557,12 +557,13 @@ test('apply registers every route the client calls', () => {
     sessions: { get() { return undefined } },
   }
   module.apply(ctx)
-  assert.equal(paths.length, 7)
+  assert.equal(paths.length, 8)
   assert.ok(paths.includes('POST /api/conversation-tree/forest'))
   assert.ok(paths.includes('POST /api/conversation-tree/branch'))
   assert.ok(paths.includes('GET /api/conversation-tree/tree'))
   assert.ok(paths.includes('POST /api/conversation-tree/note'))
   assert.ok(paths.includes('POST /api/conversation-tree/compare'))
+  assert.ok(paths.includes('POST /api/conversation-tree/peek'))
 })
 
 test('nextBranchOrdinal takes the highest used sibling number', () => {
@@ -890,4 +891,40 @@ test('lastText reads the newest message of one role', () => {
   assert.equal(lastText(events, 'assistant/message'), '第一答')
   assert.equal(lastText([], 'assistant/message'), '')
   assert.equal(countToolCalls([{ type: 'tool/call' }, { type: 'tool/call' }], 1), 1)
+})
+
+test('a comparison lists the prompts each side opened with', async () => {
+  const events = [
+    { seq: 0, type: 'user/message', data: { content: [{ type: 'text', text: '继承的旧问题' }] } },
+    { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '  第一问\n换行  ' }] } },
+    { seq: 2, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '答复' }] } } },
+    { seq: 3, type: 'user/message', data: { content: [{ type: 'text', text: '第二问' }] } },
+  ]
+  assert.deepEqual(openingPrompts(events, 1), ['第一问 换行', '第二问'])
+  // The inherited prefix is not this branch's own questioning.
+  assert.deepEqual(openingPrompts(events, 0), ['继承的旧问题', '第一问 换行', '第二问'])
+  assert.deepEqual(openingPrompts(events, 1, 1), ['第一问 换行'])
+  assert.deepEqual(openingPrompts([], 0), [])
+
+  const sessions = new Map([
+    ['a', { header: { id: 'a', cwd }, inheritedEventCount: 1, snapshotEvents: () => events }],
+  ])
+  const ctx = {
+    ...liveContext(['a'], ['a']),
+    sessions: { get: (id) => sessions.get(id), list: () => [] },
+  }
+  const peek = await (await peekSession(ctx, request({ id: 'a' }))).json()
+  assert.equal(peek.side.lastUser, '第二问')
+  assert.deepEqual(peek.side.prompts, ['第一问 换行', '第二问'])
+  assert.equal((await peekSession(ctx, request({ id: 'missing' }))).status, 404)
+  assert.equal((await peekSession(ctx, request({}))).status, 400)
+})
+
+test('a fresh branch carries the message it forked at as its first note', () => {
+  assert.equal(autoNote('  改一下\n样式  '), '改一下 样式')
+  assert.equal(autoNote(''), '')
+  assert.equal(autoNote(undefined), '')
+  // Long branch points are clipped, never stored whole.
+  assert.equal(autoNote('一'.repeat(40)).length, 19)
+  assert.ok(autoNote('一'.repeat(40)).endsWith('…'))
 })

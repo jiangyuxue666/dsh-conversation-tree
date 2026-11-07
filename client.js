@@ -27,6 +27,7 @@ window.__ModuleLoader__.load({
     const DELETE_ROUTE = '/api/conversation-tree/delete'
     const NOTE_ROUTE = '/api/conversation-tree/note'
     const COMPARE_ROUTE = '/api/conversation-tree/compare'
+    const PEEK_ROUTE = '/api/conversation-tree/peek'
     const STYLE_ID = 'dsh-conversation-tree/ui'
     const TOAST_MS = 4200
     /** Every conversation tree is a panel on the shared canvas. */
@@ -55,6 +56,10 @@ window.__ModuleLoader__.load({
       'inspector.depth': '第 {depth} 层',
       'inspector.level': '层级',
       'inspector.branchPoint': '分支点',
+      'inspector.lastSaid': '最后说了什么',
+      'inspector.lastUser': '你最后问的',
+      'inspector.lastAssistant': '它最后答的',
+      'inspector.path': '从根对话到这里',
       'inspector.usage': '本对话用量',
       'inspector.uncached': '未缓存输入',
       'inspector.cacheRead': '缓存读取',
@@ -77,6 +82,7 @@ window.__ModuleLoader__.load({
       'compare.usage': '用量',
       'compare.model': '模型',
       'compare.last': '最后一条结论',
+      'compare.prompts': '各自问过什么',
       'compare.empty': '这条分支还没有自己的回复',
       'compare.close': '关闭',
       'inspector.model': '模型',
@@ -111,6 +117,10 @@ window.__ModuleLoader__.load({
       'head.searchCount': '{count} 个匹配',
       'head.showArchived': '显示已归档',
       'head.hideArchived': '隐藏已归档',
+      'head.focus': '只看当前这棵树',
+      'head.unfocus': '显示同一工作区的其它树',
+      'head.orderRecent': '按最近活动排序（点一下改成按创建时间）',
+      'head.orderCreated': '按创建时间排序（点一下改回按最近活动）',
       'head.forestCount': '{conversations} 个对话 · {branches} 条分支',
       'head.workspaceCount': '{workspace} · {conversations} 个对话 · {branches} 条分支',
       'forest.empty': '这个工作区还没有对话',
@@ -227,6 +237,10 @@ window.__ModuleLoader__.load({
       'inspector.depth': 'level {depth}',
       'inspector.level': 'Level',
       'inspector.branchPoint': 'Branch point',
+      'inspector.lastSaid': 'Last said',
+      'inspector.lastUser': 'Your last question',
+      'inspector.lastAssistant': 'Its last answer',
+      'inspector.path': 'Path from the root',
       'inspector.usage': 'Own usage',
       'inspector.uncached': 'Uncached input',
       'inspector.cacheRead': 'Cached input',
@@ -249,6 +263,7 @@ window.__ModuleLoader__.load({
       'compare.usage': 'Usage',
       'compare.model': 'Model',
       'compare.last': 'Last conclusion',
+      'compare.prompts': 'What each side asked',
       'compare.empty': 'This branch has not answered yet',
       'compare.close': 'Close',
       'inspector.model': 'Model',
@@ -283,6 +298,10 @@ window.__ModuleLoader__.load({
       'head.search': 'Search titles or excerpts',
       'head.searchCount': '{count} matches',
       'head.hideArchived': 'Hide archived',
+      'head.focus': 'Show only this tree',
+      'head.unfocus': 'Show the other trees of this Workspace',
+      'head.orderRecent': 'Sorted by recent activity — switch to creation order',
+      'head.orderCreated': 'Sorted by creation order — switch back to recent activity',
       'head.forestCount': '{conversations} conversations · {branches} branches',
       'head.workspaceCount': '{workspace} · {conversations} conversations · {branches} branches',
       'forest.empty': 'This workspace has no conversations yet',
@@ -492,6 +511,21 @@ window.__ModuleLoader__.load({
       return h(Svg, { size, className }, h('path', { d: 'm5 12.5 4.2 4.2L19 7' }))
     }
 
+    function IconSort({ size = 15, className }) {
+      return h(Svg, { size, className },
+        h('path', { d: 'M4 6.5h10' }),
+        h('path', { d: 'M4 12h7' }),
+        h('path', { d: 'M4 17.5h4' }),
+        h('path', { d: 'M18.5 5v13' }),
+        h('path', { d: 'm15.5 15 3 3 3-3' }))
+    }
+
+    function IconFocus({ size = 15, className }) {
+      return h(Svg, { size, className },
+        h('circle', { cx: '12', cy: '12', r: '4.2' }),
+        h('path', { d: 'M12 4v2.4M12 17.6V20M4 12h2.4M17.6 12H20' }))
+    }
+
     function IconSearch({ size = 15, className }) {
       return h(Svg, { size, className },
         h('circle', { cx: '11', cy: '11', r: '6.2' }),
@@ -556,6 +590,9 @@ window.__ModuleLoader__.load({
       const listeners = new Set()
       const inflight = new Map()
       const inflightForest = new Map()
+      // What one node last said, by id. Small and for the page's lifetime: the
+      // tree payload deliberately carries no message text.
+      const peeks = new Map()
       const noticeTimers = new Map()
       // Every invalidation bumps the epoch; a response that started under an
       // older epoch must not write its tree back over a newer one.
@@ -816,6 +853,26 @@ window.__ModuleLoader__.load({
           this.patchNode(sessionId, { note: saved })
           return saved
         },
+        /**
+         * What this conversation last said.
+         *
+         * Asked for one selected node at a time and cached by id: the tree
+         * payload carries counts and usage, never message text, because one
+         * page load must not read every session log in the Workspace.
+         */
+        async peek(sessionId) {
+          if (typeof sessionId !== 'string' || sessionId === '') return undefined
+          if (peeks.has(sessionId)) return peeks.get(sessionId)
+          const body = await requestJson(PEEK_ROUTE, {
+            method: 'POST',
+            body: JSON.stringify({ id: sessionId }),
+          })
+          const side = body?.side
+          if (side === undefined || side === null) return undefined
+          if (peeks.size > 40) peeks.clear()
+          peeks.set(sessionId, side)
+          return side
+        },
         /** Fetch two sides and open the comparison dialog. */
         async compare(ids) {
           const body = await requestJson(COMPARE_ROUTE, {
@@ -968,6 +1025,50 @@ window.__ModuleLoader__.load({
     function noteOf(node) {
       const note = node?.note
       return typeof note === 'string' ? note.trim() : ''
+    }
+
+    /**
+     * When each node was last looked at, so a branch that moved on since then
+     * can say so. Kept in localStorage: a reload must not resurrect the dots.
+     */
+    const SEEN_KEY = 'dsh-conversation-tree:seen'
+    let seenCache = null
+
+    function readSeen() {
+      if (seenCache !== null) return seenCache
+      seenCache = {}
+      try {
+        if (typeof window !== 'undefined') {
+          const raw = window.localStorage.getItem(SEEN_KEY)
+          const parsed = raw === null ? null : JSON.parse(raw)
+          if (parsed !== null && typeof parsed === 'object') seenCache = parsed
+        }
+      } catch {
+        seenCache = {}
+      }
+      return seenCache
+    }
+
+    /** Remember that this node has been read up to now. */
+    function markSeen(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return
+      const seen = readSeen()
+      const now = Date.now()
+      if (typeof seen[sessionId] === 'number' && seen[sessionId] >= now) return
+      seen[sessionId] = now
+      try {
+        if (typeof window !== 'undefined') window.localStorage.setItem(SEEN_KEY, JSON.stringify(seen))
+      } catch {
+        /* a full quota only costs the dots */
+      }
+    }
+
+    /** The activity time this node shows as unread, or 0. */
+    function unreadAt(entry) {
+      const seen = readSeen()[entry?.id]
+      if (typeof seen !== 'number') return 0
+      if (entry?.current === true) return 0
+      return Number.isFinite(entry?.updatedAt) && entry.updatedAt > seen ? entry.updatedAt : 0
     }
 
     /** The shortest title that still distinguishes one branch card from its siblings. */
@@ -1732,6 +1833,11 @@ window.__ModuleLoader__.load({
       onQuery,
       showArchived = false,
       onToggleArchived,
+      createdOrder = false,
+      onToggleOrder,
+      canFocus = false,
+      focused = false,
+      onToggleFocus,
     }) {
       const status = notice?.text ?? counts
       return h('header', { className: 'ct-top' },
@@ -1777,6 +1883,28 @@ window.__ModuleLoader__.load({
               title: showArchived ? t('head.hideArchived') : t('head.showArchived'),
               'aria-label': showArchived ? t('head.hideArchived') : t('head.showArchived'),
             }, showArchived ? h(IconUnarchive, { size: 15 }) : h(IconArchive, { size: 15 }))
+            : null,
+          // Dimming the other trees is only meaningful once there is another
+          // tree to dim.
+          canFocus && typeof onToggleFocus === 'function'
+            ? h('button', {
+              type: 'button',
+              className: 'ct-icon-btn',
+              'aria-pressed': focused,
+              onClick: onToggleFocus,
+              title: focused ? t('head.unfocus') : t('head.focus'),
+              'aria-label': focused ? t('head.unfocus') : t('head.focus'),
+            }, h(IconFocus, { size: 15 }))
+            : null,
+          typeof onToggleOrder === 'function'
+            ? h('button', {
+              type: 'button',
+              className: 'ct-icon-btn',
+              'aria-pressed': createdOrder,
+              onClick: onToggleOrder,
+              title: createdOrder ? t('head.orderCreated') : t('head.orderRecent'),
+              'aria-label': createdOrder ? t('head.orderCreated') : t('head.orderRecent'),
+            }, h(IconSort, { size: 15 }))
             : null,
           h('button', {
             type: 'button',
@@ -2264,6 +2392,9 @@ window.__ModuleLoader__.load({
             },
             onDoubleClick: (event) => event.stopPropagation(),
           }, h(IconChevron, { size: 12 }))
+          : null,
+        unreadAt(entry) > 0
+          ? h('span', { className: 'ct-node-unread', 'aria-hidden': true })
           : null)
     }
 
@@ -2303,6 +2434,31 @@ window.__ModuleLoader__.load({
       const statusTrail = external ? `${trail} · ${t('inspector.external')}` : trail
       const openLabel = entry.current ? t('inspector.goChat') : t('inspector.open')
 
+      // What this node last said. Fetched for the selected node only, because
+      // the forest payload intentionally carries no message text.
+      const [peek, setPeek] = React.useState(null)
+      React.useEffect(() => {
+        let alive = true
+        setPeek(null)
+        if (entry.pending === true) return undefined
+        store.peek(entry.id)
+          .then((side) => { if (alive) setPeek(side ?? null) })
+          .catch(() => { if (alive) setPeek(null) })
+        return () => { alive = false }
+      }, [entry.id])
+
+      // The path from the root to this node, so a deep tree can be walked back
+      // up without hunting for the parent on the canvas.
+      const path = []
+      for (let cursor = entry; cursor !== undefined && path.length < 40; cursor = cursor.parentId === null ? undefined : graph.byId.get(cursor.parentId)) {
+        path.push(cursor)
+      }
+      path.reverse()
+      const ancestors = path.slice(0, -1)
+      const crumbs = ancestors.length <= 3
+        ? ancestors
+        : [ancestors[0], null, ...ancestors.slice(-2)]
+
       const usageRows = usage === null
         ? [t('inspector.uncached'), t('inspector.cacheRead'), t('inspector.cacheWrite'), t('inspector.output')].map((label) => (
           h('div', { className: 'ct-kv', key: label },
@@ -2326,6 +2482,18 @@ window.__ModuleLoader__.load({
 
       return h('aside', { className: 'ct-side', 'aria-label': entry.title },
         h('div', { className: 'ct-side-scroll' },
+          ancestors.length === 0
+            ? null
+            : h('nav', { className: 'ct-crumbs', 'aria-label': t('inspector.path') },
+              crumbs.map((ancestor, index) => (ancestor === null
+                ? h('span', { key: `gap-${index}`, className: 'ct-crumb-gap' }, '…')
+                : h('button', {
+                  key: ancestor.id,
+                  type: 'button',
+                  className: 'ct-crumb',
+                  title: ancestor.title,
+                  onClick: () => onSelect(ancestor.id),
+                }, ancestor.title)))),
           h('h2', { className: 'ct-side-title', title: entry.title }, entry.title),
           h('div', { className: 'ct-side-status' },
             h('span', { className: `ct-status-dot ct-status-dot-${status.key}`, 'aria-hidden': true }),
@@ -2402,6 +2570,21 @@ window.__ModuleLoader__.load({
             ? h('section', { className: 'ct-section' },
               h('div', { className: 'ct-section-label' }, t('inspector.branchPoint')),
               h('p', { className: 'ct-snippet', title: entry.node.snippet }, entry.node.snippet))
+            : null,
+
+          peek !== null && (peek.lastUser !== '' || peek.lastAssistant !== '')
+            ? h('section', { className: 'ct-section' },
+              h('div', { className: 'ct-section-label' }, t('inspector.lastSaid')),
+              peek.lastAssistant !== ''
+                ? h('div', { className: 'ct-last' },
+                  h('div', { className: 'ct-last-label' }, t('inspector.lastAssistant')),
+                  h('p', { className: 'ct-last-text' }, peek.lastAssistant))
+                : null,
+              peek.lastUser !== ''
+                ? h('div', { className: 'ct-last' },
+                  h('div', { className: 'ct-last-label' }, t('inspector.lastUser')),
+                  h('p', { className: 'ct-last-text' }, peek.lastUser))
+                : null)
             : null,
 
           h('section', { className: 'ct-section' },
@@ -2641,6 +2824,20 @@ window.__ModuleLoader__.load({
      * single-tree reading order for the conversation being read, and the whole
      * Workspace stays one surface to pan, zoom, search and inspect.
      */
+    /**
+     * When this tree first branched, for the creation-order toggle.
+     *
+     * A tree that never branched has no edge timestamps at all; it sorts last
+     * instead of pretending to be newest.
+     */
+    function treeCreatedAt(model) {
+      let earliest = Number.POSITIVE_INFINITY
+      for (const node of model?.tree?.nodes ?? []) {
+        if (Number.isFinite(node?.createdAt)) earliest = Math.min(earliest, node.createdAt)
+      }
+      return Number.isFinite(earliest) ? earliest : Number.MAX_SAFE_INTEGER
+    }
+
     function TreeView({ sessionId, useSessions, useWorkspaces, useSessionAccess, openView }) {
       const state = useStore()
       const sessions = useSessions((value) => value)
@@ -2668,6 +2865,10 @@ window.__ModuleLoader__.load({
       // canvas whose whole subject is branching. The page's own conversation
       // always stays; the rest is one click away.
       const [showSingles, setShowSingles] = React.useState(false)
+      // Newest activity is the useful order while working; creation order is
+      // the useful order while reviewing what was tried and when.
+      const [createdOrder, setCreatedOrder] = React.useState(false)
+      const [focused, setFocused] = React.useState(false)
       const [center, setCenter] = React.useState(null)
       const centerSeq = React.useRef(0)
       const hostRef = React.useRef(null)
@@ -2728,6 +2929,7 @@ window.__ModuleLoader__.load({
         }
         const models = [...projection.models].sort((a, b) => {
           if (a.current !== b.current) return a.current ? -1 : 1
+          if (createdOrder) return treeCreatedAt(a) - treeCreatedAt(b)
           return (order.rank.get(a.id) ?? 0) - (order.rank.get(b.id) ?? 0)
         })
         const out = []
@@ -2744,14 +2946,15 @@ window.__ModuleLoader__.load({
           if (graph !== null) out.push({ key: model.id, model, graph })
         }
         return out
-      }, [projection, sessions, archived, showArchived, collapsedNodes, query, compact, sessionId, workspace.key])
+      }, [projection, sessions, archived, showArchived, collapsedNodes, query, compact, sessionId, workspace.key, createdOrder])
 
       const visibleItems = React.useMemo(() => {
-        if (showSingles) return items
-        const branched = items.filter((item) => item.model.branchCount > 0 || item.model.current)
-        return branched.length === 0 ? items : branched
-      }, [items, showSingles])
-      const hiddenSingles = items.length - visibleItems.length
+        const base = focused ? items.filter((item) => item.model.current) : items
+        if (showSingles || base.length <= 1) return base
+        const branched = base.filter((item) => item.model.branchCount > 0 || item.model.current)
+        return branched.length === 0 ? base : branched
+      }, [items, showSingles, focused])
+      const hiddenSingles = focused ? 0 : items.length - visibleItems.length
 
       const layout = React.useMemo(
         () => layoutPanels(visibleItems, viewport, collapsedPanels),
@@ -2795,6 +2998,7 @@ window.__ModuleLoader__.load({
           void startCompare(selectedId, nodeId)
           return
         }
+        markSeen(nodeId)
         setSelectedId(nodeId)
       }, [comparePick, selectedId, startCompare])
 
@@ -2805,6 +3009,7 @@ window.__ModuleLoader__.load({
         }
         if (selectedId !== null && located.has(selectedId)) return
         if (located.has(sessionId)) {
+          markSeen(sessionId)
           setSelectedId(sessionId)
           return
         }
@@ -2888,6 +3093,7 @@ window.__ModuleLoader__.load({
           store.toast('info', t('node.archivedOpen'))
           return
         }
+        markSeen(id)
         openNodeById(id)
       }
 
@@ -2967,6 +3173,11 @@ window.__ModuleLoader__.load({
         onQuery: setQuery,
         showArchived,
         onToggleArchived: () => setShowArchived((value) => !value),
+        createdOrder,
+        onToggleOrder: () => setCreatedOrder((value) => !value),
+        canFocus: items.length > 1,
+        focused,
+        onToggleFocus: () => setFocused((value) => !value),
       })
 
       if (forest === undefined) {
@@ -3159,6 +3370,11 @@ window.__ModuleLoader__.load({
           h('span', null, t('compare.tools', { count: side.toolCalls ?? 0 })),
           usage !== null ? h('span', null, `${formatCompact(usage.total)} tok`) : null,
           model !== null ? h('span', { className: 'ct-compare-model' }, `${model.provider ?? ''} / ${model.model ?? ''}`) : null),
+        h('div', { className: 'ct-compare-label' }, t('compare.prompts')),
+        Array.isArray(side.prompts) && side.prompts.length > 0
+          ? h('ol', { className: 'ct-compare-prompts' },
+            side.prompts.map((prompt, index) => h('li', { key: index }, prompt)))
+          : h('p', { className: 'ct-compare-empty' }, t('compare.empty')),
         h('div', { className: 'ct-compare-label' }, t('compare.last')),
         side.lastAssistant !== ''
           ? h('p', { className: 'ct-compare-text' }, side.lastAssistant)
@@ -3692,6 +3908,15 @@ window.__ModuleLoader__.load({
       .ct-node-dot-running { background: var(--dsw-alias-state-success-primary); }
       .ct-node-dot-pending { background: var(--dsw-alias-state-warn-primary); }
       .ct-node-dot-archived { background: var(--dsw-alias-label-secondary); }
+      .ct-node-unread {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--dsw-alias-brand-primary);
+      }
       .ct-node-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
       .ct-node-dimmed { opacity: .34; }
       .ct-node-match { border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 45%, var(--dsw-alias-border-l1)); }
@@ -3792,6 +4017,51 @@ window.__ModuleLoader__.load({
         overflow-y: auto;
         padding: 18px 20px 20px;
         scrollbar-width: thin;
+      }
+      .ct-crumbs {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 2px;
+        margin: 0 0 5px;
+        font-size: 11.5px;
+        line-height: 1.45;
+      }
+      .ct-crumb {
+        max-width: 9em;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--dsw-alias-label-tertiary);
+        font: inherit;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: pointer;
+      }
+      .ct-crumb:hover { color: var(--dsw-alias-label-primary); }
+      .ct-crumb::after, .ct-crumb-gap::after {
+        content: '›';
+        margin: 0 4px;
+        color: var(--dsw-alias-label-tertiary);
+      }
+      .ct-crumb-gap { color: var(--dsw-alias-label-tertiary); }
+      .ct-last + .ct-last { margin-top: 9px; }
+      .ct-last-label {
+        margin-bottom: 3px;
+        color: var(--dsw-alias-label-tertiary);
+        font-size: 11.5px;
+        line-height: 1.4;
+      }
+      .ct-last-text {
+        margin: 0;
+        max-height: 112px;
+        overflow: auto;
+        color: var(--dsw-alias-label-primary);
+        font-size: 12.5px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
       .ct-side-title {
         margin: 0;
@@ -4138,6 +4408,15 @@ window.__ModuleLoader__.load({
         color: var(--dsw-alias-label-tertiary);
         font-size: 12.5px;
       }
+      .ct-compare-prompts {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--dsw-alias-label-secondary);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .ct-compare-prompts > li { overflow-wrap: anywhere; }
+      .ct-compare-prompts > li + li { margin-top: 3px; }
       .ct-dialog-head {
         flex: none;
         display: flex;
