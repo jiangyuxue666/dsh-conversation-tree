@@ -29,14 +29,15 @@ const ReactStub = {
     return { type, props: next, key: next.key }
   },
   useState(initial) {
-    const index = hookContext.index++
-    if (!(index in hookContext.states)) {
-      hookContext.states[index] = typeof initial === 'function' ? initial() : initial
+    const context = hookContext
+    const index = context.index++
+    if (!(index in context.states)) {
+      context.states[index] = typeof initial === 'function' ? initial() : initial
     }
     const setter = (value) => {
-      hookContext.states[index] = typeof value === 'function' ? value(hookContext.states[index]) : value
+      context.states[index] = typeof value === 'function' ? value(context.states[index]) : value
     }
-    return [hookContext.states[index], setter]
+    return [context.states[index], setter]
   },
   useEffect() {
     hookContext.index++
@@ -384,6 +385,99 @@ test('full tree, target picker, and confirm dialog render with live data', async
     sessions,
     archived: new Set(['c']),
   })))
+})
+
+test('bring-back uses the current model and only sends the edited preview', async () => {
+  // A fresh factory keeps this test's app and store separate from other tests.
+  const isolated = captured.factory((name) => {
+    if (name === 'react') return ReactStub
+    throw new Error(`unexpected require: ${name}`)
+  })
+  const prompts = []
+  isolated.apply({
+    effect() {},
+    locale: { register() {}, bind: () => (key) => key },
+    slots: { inject() {} },
+    remote: { session: { prompt: async (...args) => { prompts.push(args); return { ok: true } } } },
+  })
+
+  const originalFetch = globalThis.fetch
+  const requests = []
+  let generation = 0
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).includes('/api/conversation-tree/tree')) return { ok: true, json: async () => tree }
+    assert.equal(url, '/api/conversation-tree/summarize')
+    requests.push(JSON.parse(options.body))
+    generation += 1
+    return { ok: true, json: async () => ({ summary: generation === 1 ? '旧摘要' : '新摘要' }) }
+  }
+
+  // Unlike the one-shot render helper, retain the hook state between renders.
+  const context = { states: [], refs: [], index: 0 }
+  const props = {
+    dialog: { id: 101, kind: 'target', sessionId: 'b', sourceId: 'b' },
+    sessions,
+    archived: new Set(['c']),
+  }
+  function renderDialog() {
+    const previous = hookContext
+    hookContext = context
+    context.index = 0
+    try { return isolated.__test.TargetDialog(props) } finally { hookContext = previous }
+  }
+  function findElement(element, predicate) {
+    if (Array.isArray(element)) {
+      for (const child of element) {
+        const found = findElement(child, predicate)
+        if (found !== undefined) return found
+      }
+      return undefined
+    }
+    if (element === null || element === undefined || typeof element !== 'object') return undefined
+    if (predicate(element)) return element
+    return findElement(element.props?.children, predicate)
+  }
+  function footerButton(dialog, label) {
+    return findElement(dialog.props.footer, (element) =>
+      typeof element.props?.onClick === 'function' && render(element.props.children).includes(label))
+  }
+
+  try {
+    await isolated.__test.store.loadTree('b', true)
+    let dialog = renderDialog()
+    const target = findElement(dialog.props.children, (element) =>
+      element.props?.role === 'radio' && render(element.props.children).includes('分支 A'))
+    assert.ok(target, 'the target can be selected through the picker')
+    target.props.onClick()
+    dialog = renderDialog()
+    await footerButton(dialog, '生成摘要预览').props.onClick()
+    dialog = renderDialog()
+    assert.deepEqual(requests, [{ sessionId: 'b' }])
+    assert.equal(findElement(dialog.props.children, (element) => element.type === 'textarea').props.value, '旧摘要')
+    assert.ok(footerButton(dialog, '发送'))
+    assert.deepEqual(prompts, [])
+
+    // A conversation that already switched models regenerates directly, with
+    // no extra provider confirmation standing between it and its current model.
+    await footerButton(dialog, '重新生成').props.onClick()
+    dialog = renderDialog()
+    assert.deepEqual(requests, [{ sessionId: 'b' }, { sessionId: 'b' }])
+    assert.equal(findElement(dialog.props.children, (element) => element.type === 'textarea').props.value, '新摘要')
+    assert.equal(render(dialog.props.children).includes('target.providerChange'), false)
+    assert.equal(footerButton(dialog, '确认并生成摘要'), undefined)
+    assert.deepEqual(prompts, [])
+
+    // Sending is a separate action and targets only the chosen conversation.
+    await footerButton(dialog, '发送').props.onClick()
+    assert.equal(prompts.length, 1)
+    const [body] = prompts[0]
+    assert.equal(body.sessionId, 'a')
+    assert.equal(body.mode, 'queue')
+    assert.ok(body.content[0].text.includes('新摘要'))
+    assert.ok(body.content[0].text.includes('分支 B'))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 const forestSolo = node('solo', null, { atSeq: null, turn: null, snippet: '', title: '' })

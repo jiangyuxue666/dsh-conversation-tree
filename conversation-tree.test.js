@@ -8,7 +8,6 @@ const {
   resolveBranchBoundary,
   branchTitle,
   subtreeEdges,
-  transcriptOf,
   titleOfEvents,
   validEdge,
   sideProjectKey,
@@ -97,24 +96,6 @@ test('subtreeEdges returns children before parents', () => {
   const edges = [edge('a', 'r'), edge('b', 'a'), edge('c', 'b')]
   assert.deepEqual(subtreeEdges(edges, 'a').map((entry) => entry.childId), ['c', 'b', 'a'])
   assert.deepEqual(subtreeEdges(edges, 'b').map((entry) => entry.childId), ['c', 'b'])
-})
-
-test('transcriptOf skips inherited events and keeps tool evidence', () => {
-  const events = [
-    { seq: 0, type: 'user/message', data: { content: [{ type: 'text', text: '继承的提问' }] } },
-    { seq: 1, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '继承的回答' }] } } },
-    { seq: 2, type: 'session/end-seed', data: { inherited: true } },
-    { seq: 3, type: 'user/message', data: { content: [{ type: 'text', text: '分支自己的提问' }] } },
-    { seq: 4, type: 'tool/call', data: { name: 'read', arguments: '{"path":"a"}' } },
-    { seq: 5, type: 'tool/result', data: { message: { content: [{ type: 'text', text: '文件内容' }] } } },
-    { seq: 6, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '分支自己的回答' }] } } },
-  ]
-  const result = transcriptOf(events, 3)
-  assert.ok(result.text.includes('分支自己的提问'))
-  assert.ok(result.text.includes('【调用 read】'))
-  assert.ok(result.text.includes('【工具结果】文件内容'))
-  assert.ok(!result.text.includes('继承的提问'))
-  assert.ok(!result.text.includes('继承的回答'))
 })
 
 test('titleOfEvents takes the latest durable title', () => {

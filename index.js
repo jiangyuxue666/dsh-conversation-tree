@@ -1,7 +1,7 @@
 import { handles } from './lib/handles.js'
 import { forgetLiveSessions, liveSessionIds, resetLiveSessions } from './lib/liveness.js'
 import { sameSiteRequest } from './lib/base.js'
-import { titleOfEvents, transcriptOf } from './lib/transcript.js'
+import { titleOfEvents } from './lib/transcript.js'
 import { selectionOfEvents } from './lib/models.js'
 import { validEdge } from './lib/registry.js'
 import { STATS_CACHE, augmentNodeStats, loadStatsCache, ownCounts, ownUsage, persistStats, pruneStatsCache, resetStatsCache, scheduleStatsPersist, statsNodeSelection } from './lib/stats.js'
@@ -9,7 +9,7 @@ import { recoverChain } from './lib/session.js'
 import { buildForest, buildTree, forestMembers, pruneDeadHandles, readForest, readTree, registeredChildren, repairTreeRegistry, withTreeForRead } from './lib/tree.js'
 import { nearestLiveAncestor, pruneDeadNodes } from './lib/reconcile.js'
 import { branchPoint, branchTitle, autoNote, createBranch, latestBranchBoundary, nextBranchOrdinal, resolveBranchBoundary } from './lib/branch.js'
-import { redactSecrets, summarize, summaryPrompt } from './lib/summarize.js'
+import { redactSecrets, summarize } from './lib/summarize.js'
 import { saveNodeNote } from './lib/notes.js'
 import { summarizeTree, treePrompt, digestText, TREE_SYSTEM } from './lib/tree-summary.js'
 import { compareSessions, countToolCalls, lastText, openingPrompts, peekSession, readSide } from './lib/compare.js'
@@ -28,7 +28,7 @@ import { cleanupWorkspaceSession, assertDeleteHeader, deleteSubtree, reconcileWo
  *  - branch: create a child session at one completed-turn boundary;
  *  - tree: resolve the connected branch tree around one session, optionally
  *    with each Session's own token/Turn totals after its inherited prefix;
- *  - summarize: compress a source conversation's own turns for bring-back;
+ *  - summarize: create a handoff from the source's current model context;
  *  - delete: stop and remove one branch subtree after explicit confirmation.
  *
  * @module dsh-conversation-tree
@@ -196,12 +196,10 @@ export const __test = {
   branchTitle,
   nextBranchOrdinal,
   redactSecrets,
-  summaryPrompt,
   selectionOfEvents,
   sameSiteRequest,
   recoverChain,
   subtreeEdges,
-  transcriptOf,
   titleOfEvents,
   validEdge,
   sideProjectKey,

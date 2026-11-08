@@ -16,7 +16,7 @@ A web plugin for DeepSeek Harness. It draws every conversation of a workspace, t
 - **Node details** — source, branch turn, depth, the conversation's own turns and steps, token breakdown, cache hit rate and model.
 - **Notes** — name any conversation or branch; the name shows on the node (a root shows it on its own node) and search matches it. Notes live in the plugin's registry, never in the session log. A fresh branch starts with the message it forked at as its note.
 - **Compare** — select a node, press `Compare` in the side panel and pick another (or `Shift`-click one) to see turns, steps, tool calls, usage, model, the prompts each side opened with and the last conclusion side by side.
-- **Bring back** — compresses the turns a conversation produced itself (skipping the inherited fork prefix) into a summary, offers an editable preview, then queues it into a target conversation.
+- **Bring back** — reads the source conversation's current context in the background, including inherited context and existing compaction summaries, and sends it to the model currently selected for the source and its provider to generate a summary. Only after you preview, edit and confirm is the summary queued into the target conversation. The context may contain sensitive data.
 - **Branch from the tree** — `Branch from here` forks the newest completed turn of the conversation you are reading, without going back to the chat page.
 - **Where this tree got to** — one model call over the whole tree: each branch's conclusion, where it stalled, and which one is worth keeping. Only runs when you press it.
 - **Unread dot** — a branch that moved on since you last looked at it shows a dot.
@@ -57,7 +57,7 @@ dsh plugin --profile web add /path/to/dsh-conversation-tree
 
 Links the source directory into the profile; restart DSH after edits, no reinstall needed.
 
-`@deepseek-ai/dsh-session` is declared as a peer dependency and provided by DSH. Run `npm install` before running the tests locally.
+`@deepseek-ai/dsh-session` and `@deepseek-ai/dsh-llm` are declared as peer dependencies and provided by DSH. Run `npm install` before running the tests locally.
 
 ## Usage
 
@@ -66,11 +66,13 @@ Links the source directory into the profile; restart DSH after edits, no reinsta
 3. Open the `Tree` tab to see every tree in the workspace.
 4. Click a node for details; double-click to open the conversation.
 5. Drag the canvas to pan, scroll to zoom; the corner button fits the canvas and may enlarge a small tree up to 150%. With several trees each header arrow collapses one tree; a lone tree has no header. Conversations that never branched stay folded at the bottom of the canvas.
-6. Use `Bring back` in the side panel to send a summary to a target conversation.
+6. Select the source node, use `Bring back` in the side panel and choose a target. Generate the summary, then review or edit the preview and click `Send` to queue it into the target conversation.
 7. Archive or delete a subtree at the bottom of the side panel.
 
 ## Notes
 
+- Generating a `Bring back` summary creates no visible or persisted session and appends no message to the source conversation; only the separate Send action queues the summary into the target conversation. The context is sent to the model selected for the source and its provider and may contain sensitive data; check that it is appropriate to send first. A conversation that switched models or providers mid-way still uses its current selection without another confirmation. Summary redaction covers only common secret patterns; review the text before sending.
+- If the source context exceeds the model's limit, generation fails rather than truncating the input. Existing compaction summaries are included, but original content removed by earlier compaction cannot be recovered. Model and provider support varies; compatibility with every provider cannot be guaranteed.
 - The tree only manages sessions created through `Tree branch`; forks created by the native DSH button are not shown.
 - Branch sessions also appear in the regular conversation list; the tree is an additional management view.
 - Deleting a conversation from the sidebar (or another plugin) is reconciled on the next read: the children of the deleted node move up to the nearest live ancestor and are marked as re-linked; when the whole ancestor chain is gone, they become roots of their own trees instead of leaving a node nothing can open.
@@ -98,7 +100,8 @@ Layout:
 - `lib/tree.js` — `/tree` and `/forest` reads and projections
 - `lib/session.js` — session log access, pending promotion, ancestor recovery
 - `lib/branch.js` — branch creation
-- `lib/summarize.js` — bring-back summaries
+- `lib/summarize.js` — bring-back summaries and model calls
+- `lib/summary-context.js` — read-only capture of the source model context
 - `lib/tree-summary.js` — the whole-tree digest
 - `lib/delete.js` — subtree deletion, including platform branches
 - `lib/stats.js` — token and turn statistics with a persistent cache

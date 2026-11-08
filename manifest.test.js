@@ -12,7 +12,7 @@ const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
  * a `link:` install only receives the names a linked package lists as peers,
  * and a regular install receives them from the profile scope.
  */
-const HOST_PACKAGES = ['@deepseek-ai/dsh-session']
+const HOST_PACKAGES = ['@deepseek-ai/dsh-session', '@deepseek-ai/dsh-llm']
 
 test('host packages are peer dependencies, never bundled dependencies', () => {
   for (const name of HOST_PACKAGES) {

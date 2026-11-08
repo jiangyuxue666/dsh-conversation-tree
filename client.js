@@ -155,7 +155,7 @@ window.__ModuleLoader__.load({
       'inspector.tokens': 'tok',
       'target.preview': '摘要预览',
       'target.previewHint': '可以修改后再发送；这段文字会作为一条消息进入目标对话。',
-      'target.regenerate': '重新压缩',
+      'target.regenerate': '重新生成',
       'target.send': '发送',
       'target.back': '返回',
       'target.truncated': '摘要被模型截断了，建议检查后再发送。',
@@ -173,13 +173,13 @@ window.__ModuleLoader__.load({
       'node.action.delete': '删除',
       'node.archivedOpen': '已归档的对话不能直接打开',
       'target.title': '带回到哪个对话？',
-      'target.subtitle': '把「{source}」自己的讨论压缩成摘要，送入目标对话。源对话会保留。',
+      'target.subtitle': '后台会读取「{source}」的当前上下文（包括继承的上下文和已有压缩摘要），发送给来源当前所选模型及其服务商生成摘要。上下文可能包含敏感数据；摘要经预览确认后才会发往目标对话。',
       'target.source': '来源',
       'target.choose': '选择目标对话',
       'target.empty': '这棵树里没有其他可带回的对话。',
       'target.cancel': '取消',
-      'target.confirm': '压缩并带回',
-      'target.working': '正在压缩…',
+      'target.confirm': '生成摘要预览',
+      'target.working': '正在生成摘要…',
       'notice.brought': '已带回「{target}」（{chars} 字）',
       'notice.branchCreated': '已创建对话树分支',
       'notice.archiving': '正在归档 {count} 个对话…',
@@ -212,16 +212,19 @@ window.__ModuleLoader__.load({
       'error.cwd-unavailable': '这条对话没有工作目录',
       'error.branch-boundary-invalid': '这条消息不在可分支的轮次末尾，请刷新后重试',
       'error.branch-boundary-inherited': '不能从继承来的轮次再分叉；请在这条分支自己的轮次上创建',
-      'error.context-unavailable': '无法安全复制这条对话的上下文：{detail}',
+      'error.context-unavailable': '无法安全读取这条对话的上下文，请稍后重试',
+      'error.source-busy': '来源对话正在运行或有未完成的轮次，请等待完成或恢复会话后重试',
+      'error.context-overflow': '来源上下文超过模型限制，无法生成摘要；内容不会被截断',
+      'error.summary-tool-call': '摘要模型尝试调用工具，无法生成摘要，请更换模型后重试',
       'error.preset-unavailable': '无法继承这条对话的工具与预设',
-      'error.model-unavailable': '找不到可用的模型',
+      'error.model-unavailable': '找不到可用的模型或服务商，请检查来源对话的模型设置',
       'error.tree-registry-failed': '无法登记这条分支：{detail}',
       'error.open-failed': '创建分支失败：{detail}',
       'error.creation-unverified': '分支已创建，但归属校验没有通过：{detail}',
       'error.tree-failed': '读取对话树失败：{detail}',
-      'error.source-empty': '这条对话还没有可压缩的内容',
-      'error.summary-empty': '压缩没有产生内容',
-      'error.summary-failed': '压缩失败：{detail}',
+      'error.source-empty': '这条对话还没有可生成摘要的内容',
+      'error.summary-empty': '摘要没有产生内容',
+      'error.summary-failed': '生成摘要失败：{detail}',
       'error.summary-unverified': '无法确认来源对话：{detail}',
       'error.session-not-found': '这条对话已经不在了',
       'error.session-live': '这个对话还在使用中，请先切换到其他对话再试',
@@ -346,7 +349,7 @@ window.__ModuleLoader__.load({
       'inspector.tokens': 'tokens',
       'target.preview': 'Summary preview',
       'target.previewHint': 'Edit before sending; this text is posted as one message into the target conversation.',
-      'target.regenerate': 'Compress again',
+      'target.regenerate': 'Generate again',
       'target.send': 'Send',
       'target.back': 'Back',
       'target.truncated': 'The model cut the summary short; check it before sending.',
@@ -364,13 +367,13 @@ window.__ModuleLoader__.load({
       'node.action.delete': 'Delete',
       'node.archivedOpen': 'Archived conversations cannot be opened',
       'target.title': 'Bring back into which conversation?',
-      'target.subtitle': 'Compress 「{source}」’s own discussion into a brief and queue it into the target. The source is kept.',
+      'target.subtitle': 'The background process reads the current context of 「{source}」, including inherited context and existing compaction summaries, and sends it to the model currently selected for the source and its provider to generate a summary. The context may contain sensitive data. The summary is sent to the target only after you preview and confirm it.',
       'target.source': 'Source',
       'target.choose': 'Choose a target conversation',
       'target.empty': 'There is no other conversation in this tree to bring back into.',
       'target.cancel': 'Cancel',
-      'target.confirm': 'Compress and bring back',
-      'target.working': 'Compressing…',
+      'target.confirm': 'Generate summary preview',
+      'target.working': 'Generating summary…',
       'notice.brought': 'Brought back into 「{target}」 ({chars} chars)',
       'notice.branchCreated': 'Tree branch created',
       'notice.archiving': 'Archiving {count} conversation(s)…',
@@ -403,16 +406,19 @@ window.__ModuleLoader__.load({
       'error.cwd-unavailable': 'This conversation has no working directory',
       'error.branch-boundary-invalid': 'This message is not at the end of a completed Turn; refresh and try again',
       'error.branch-boundary-inherited': 'A branch cannot fork from an inherited Turn; branch from one of its own Turns',
-      'error.context-unavailable': 'Could not safely copy the context: {detail}',
+      'error.context-unavailable': 'Could not safely read this conversation’s context; try again later',
+      'error.source-busy': 'The source conversation is running or has an unfinished turn; wait for it to finish or resume it, then retry',
+      'error.context-overflow': 'The source context exceeds the model’s limit; no summary was generated and the input was not truncated',
+      'error.summary-tool-call': 'The summary model attempted to call a tool; choose another model and try again',
       'error.preset-unavailable': 'Could not inherit this conversation’s preset and tools',
-      'error.model-unavailable': 'No model route is available',
+      'error.model-unavailable': 'No model or provider is available; check the source conversation’s model settings',
       'error.tree-registry-failed': 'Could not register this branch: {detail}',
       'error.open-failed': 'Could not create the branch: {detail}',
       'error.creation-unverified': 'The branch exists, but ownership verification failed: {detail}',
       'error.tree-failed': 'Could not read the conversation tree: {detail}',
-      'error.source-empty': 'This conversation has no content to compress yet',
-      'error.summary-empty': 'Compression produced nothing',
-      'error.summary-failed': 'Compression failed: {detail}',
+      'error.source-empty': 'This conversation has no content to summarize yet',
+      'error.summary-empty': 'The summary came back empty',
+      'error.summary-failed': 'Summary generation failed: {detail}',
       'error.summary-unverified': 'Could not verify the source conversation: {detail}',
       'error.session-not-found': 'That conversation is gone',
       'error.session-live': 'That conversation is still in use; switch to another conversation and retry',
@@ -3751,7 +3757,7 @@ window.__ModuleLoader__.load({
           store.toast('success', t('notice.brought', { target: targetTitle, chars: text.length }))
         } catch (failure) {
           // The edited brief stays in the textarea, so a retry does not pay for
-          // another compression call.
+          // another summary call.
           setError(friendlyError(failure))
         } finally {
           setBusy(false)
@@ -3786,6 +3792,7 @@ window.__ModuleLoader__.load({
           sourceNode?.turn !== null && sourceNode?.turn !== undefined
             ? h('span', { className: 'ct-source-meta' }, t('inspector.turn', { turn: sourceNode.turn }))
             : null),
+        error !== '' ? h('div', { className: 'ct-inline-error', role: 'alert' }, h(IconAlert, { size: 15 }), h('span', null, error)) : null,
         previewing
           ? h('div', { className: 'ct-preview' },
             h('div', { className: 'ct-target-label' }, t('target.choose') + ' · ' + targetTitle),
@@ -3798,7 +3805,6 @@ window.__ModuleLoader__.load({
               onChange: (event) => setSummary(event.target.value),
             }))
           : h(React.Fragment, null,
-            error !== '' ? h('div', { className: 'ct-inline-error' }, h(IconAlert, { size: 15 }), h('span', null, error)) : null,
             h('div', { className: 'ct-target-label' }, t('target.choose')),
             loading
               ? h('div', { className: 'ct-target-loading' }, h(Spinner, { size: 16 }), h('span', null, t('head.loading')))
@@ -3829,10 +3835,7 @@ window.__ModuleLoader__.load({
                             : t('inspector.turn', { turn: node.turn ?? 0 }),
                           session?.running ? ` · ${t('node.running')}` : '')),
                       selected ? h('span', { className: 'ct-target-check' }, h(IconCheck, { size: 15 })) : null)
-                  }))),
-        previewing && error !== ''
-          ? h('div', { className: 'ct-inline-error' }, h(IconAlert, { size: 15 }), h('span', null, error))
-          : null)
+                  }))))
     }
 
     function depthOf(tree, nodeId) {
