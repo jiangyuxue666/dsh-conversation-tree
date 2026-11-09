@@ -30,15 +30,29 @@ DSH `>=0.2.2-rc.1 <0.3.0`.
 
 ## Installation
 
+Requires DSH `>=0.2.2-rc.1 <0.3.0`.
+
+**Recommended: install from the archive tarball** — no git, no GitHub SSH key (about 9 seconds in practice):
+
+```bash
+dsh plugin --profile web add https://github.com/jiangyuxue666/dsh-conversation-tree/archive/refs/heads/main.tar.gz
+```
+
+Replace `refs/heads/main` with `refs/tags/v0.11.0` to pin a version.
+
+**Or the repository shorthand** — this needs a working GitHub SSH key on your machine, because pnpm resolves `github:` to `git+ssh://`; without one the install fails with `Permission denied`:
+
 ```bash
 dsh plugin --profile web add github:jiangyuxue666/dsh-conversation-tree
 ```
 
-Alternatively, enter the repository URL in **Settings → Plugins → Add plugin**:
+To keep the shorthand without an SSH key, make git rewrite SSH to HTTPS first:
 
+```bash
+git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 ```
-https://github.com/jiangyuxue666/dsh-conversation-tree
-```
+
+Alternatively, enter any of the addresses above in **Settings → Plugins → Add plugin**.
 
 Installation writes the plugin into the profile's `dsh.profile.bundles`; restart DSH to apply.
 
@@ -46,7 +60,7 @@ Installation writes the plugin into the profile's `dsh.profile.bundles`; restart
 
 ```bash
 npm pack
-dsh plugin --profile web add ./jiangyuxue666-dsh-conversation-tree-0.7.1.tgz
+dsh plugin --profile web add ./jiangyuxue666-dsh-conversation-tree-<version>.tgz
 ```
 
 ### Local development

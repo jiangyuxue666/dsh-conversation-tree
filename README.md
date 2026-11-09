@@ -28,15 +28,27 @@ DeepSeek Harness 的 Web 插件。将工作区内的对话及其派生分支绘�
 
 要求 DSH `>=0.2.2-rc.1 <0.3.0`。
 
+**推荐：用压缩包地址安装**（不需要 git、不需要 GitHub SSH 密钥，实测 9 秒左右）：
+
+```bash
+dsh plugin --profile web add https://github.com/jiangyuxue666/dsh-conversation-tree/archive/refs/heads/main.tar.gz
+```
+
+要固定某个版本，把 `refs/heads/main` 换成 `refs/tags/v0.11.0`。
+
+**或者用仓库简写**（需要本机已配置可用的 GitHub SSH 密钥——pnpm 会把 `github:` 解析成 `git+ssh://`，没有密钥会直接 `Permission denied`）：
+
 ```bash
 dsh plugin --profile web add github:jiangyuxue666/dsh-conversation-tree
 ```
 
-也可以通过 DSH 的「设置 → 插件 → 添加插件」填写仓库地址：
+如果只想用简写又不想配 SSH 密钥，先让 git 把 SSH 地址改写成 HTTPS：
 
+```bash
+git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 ```
-https://github.com/jiangyuxue666/dsh-conversation-tree
-```
+
+也可以通过 DSH 的「设置 → 插件 → 添加插件」填写上面任意一个地址。
 
 安装会将该插件写入 profile 的 `dsh.profile.bundles`，重启 DSH 后生效。
 
@@ -44,7 +56,7 @@ https://github.com/jiangyuxue666/dsh-conversation-tree
 
 ```bash
 npm pack
-dsh plugin --profile web add ./jiangyuxue666-dsh-conversation-tree-0.7.1.tgz
+dsh plugin --profile web add ./jiangyuxue666-dsh-conversation-tree-<version>.tgz
 ```
 
 ### 本地开发

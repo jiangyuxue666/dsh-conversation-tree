@@ -2,6 +2,14 @@
 
 本文件记录对外可见的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循语义化版本。
 
+## 0.11.1
+
+### Changed
+
+- 安装说明改用压缩包地址：`dsh plugin add https://github.com/.../archive/refs/heads/main.tar.gz`。原来的 `github:` 简写会被 pnpm 解析成 `git+ssh://git@github.com/...`，没有配置 GitHub SSH 密钥的人会直接 `Permission denied` 装不上；压缩包走 HTTPS，不需要 git 也不需要密钥。
+- README 同时保留简写写法，并注明需要 SSH 密钥，给出了把 SSH 改写成 HTTPS 的 git 配置。
+- 压缩包安装示例里的版本号不再写死（原来停在 0.7.1）。
+
 ## 0.11.0
 
 ### Changed
