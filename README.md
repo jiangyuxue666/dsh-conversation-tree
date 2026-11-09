@@ -34,19 +34,15 @@ DeepSeek Harness 的 Web 插件。将工作区内的对话及其派生分支绘�
 dsh plugin --profile web add https://github.com/jiangyuxue666/dsh-conversation-tree/archive/refs/heads/main.tar.gz
 ```
 
-要固定某个版本，把 `refs/heads/main` 换成 `refs/tags/v0.11.0`。
+要固定某个版本，把 `refs/heads/main` 换成 `refs/tags/<version>`（例如当前最新的 `refs/tags/v0.11.1`）。
 
-**或者用仓库简写**（需要本机已配置可用的 GitHub SSH 密钥——pnpm 会把 `github:` 解析成 `git+ssh://`，没有密钥会直接 `Permission denied`）：
+**或者用仓库简写**（`github:` 在部分 pnpm/git 配置下会走 git/SSH；如果本机没有可用的 GitHub 密钥，可能报 `Permission denied`）：
 
 ```bash
 dsh plugin --profile web add github:jiangyuxue666/dsh-conversation-tree
 ```
 
-如果只想用简写又不想配 SSH 密钥，先让 git 把 SSH 地址改写成 HTTPS：
-
-```bash
-git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
-```
+简写装不上时，直接用上面的压缩包地址。
 
 也可以通过 DSH 的「设置 → 插件 → 添加插件」填写上面任意一个地址。
 

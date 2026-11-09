@@ -2,12 +2,24 @@
 
 本文件记录对外可见的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循语义化版本。
 
+## 0.11.2
+
+### Changed
+
+- 「带回」交接提示词改为面向接续：优先保留用户最新要求、当前结果和可依赖的证据，区分已验证、助手自述、计划和建议，不把可选建议写成待办；不再逐项列举工具、命令和文件，只要求不执行摘要以外的操作。
+- 安装说明的版本 pin 改用 `refs/tags/<version>`，示例使用当前 tag，避免再次写死过期版本。
+
+### Fixed
+
+- 修正 0.11.1 安装说明对 `github:` 简写的归因：部分 pnpm/git 配置可能走 git/SSH，并非所有环境都如此；移除未验证的 `git insteadOf` 写法。
+- 删除英文 README 中重复的 DSH 版本要求。
+
 ## 0.11.1
 
 ### Changed
 
-- 安装说明改用压缩包地址：`dsh plugin add https://github.com/.../archive/refs/heads/main.tar.gz`。原来的 `github:` 简写会被 pnpm 解析成 `git+ssh://git@github.com/...`，没有配置 GitHub SSH 密钥的人会直接 `Permission denied` 装不上；压缩包走 HTTPS，不需要 git 也不需要密钥。
-- README 同时保留简写写法，并注明需要 SSH 密钥，给出了把 SSH 改写成 HTTPS 的 git 配置。
+- 安装说明改用压缩包地址：`dsh plugin add https://github.com/.../archive/refs/heads/main.tar.gz`。部分 pnpm/git 配置会把 `github:` 简写解析成 git/SSH；没有可用 GitHub 密钥时可能 `Permission denied`。压缩包走 HTTPS，不需要 git 也不需要密钥。
+- README 保留简写写法，并注明简写在部分环境需要 SSH；装不上时改用压缩包地址。
 - 压缩包安装示例里的版本号不再写死（原来停在 0.7.1）。
 
 ## 0.11.0

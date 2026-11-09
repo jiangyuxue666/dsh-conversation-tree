@@ -30,27 +30,21 @@ DSH `>=0.2.2-rc.1 <0.3.0`.
 
 ## Installation
 
-Requires DSH `>=0.2.2-rc.1 <0.3.0`.
-
 **Recommended: install from the archive tarball** — no git, no GitHub SSH key (about 9 seconds in practice):
 
 ```bash
 dsh plugin --profile web add https://github.com/jiangyuxue666/dsh-conversation-tree/archive/refs/heads/main.tar.gz
 ```
 
-Replace `refs/heads/main` with `refs/tags/v0.11.0` to pin a version.
+Replace `refs/heads/main` with `refs/tags/<version>` to pin a version (for example, the current release `refs/tags/v0.11.1`).
 
-**Or the repository shorthand** — this needs a working GitHub SSH key on your machine, because pnpm resolves `github:` to `git+ssh://`; without one the install fails with `Permission denied`:
+**Or the repository shorthand** — `github:` goes through git/SSH in some pnpm/git setups; without a usable GitHub key, the install may fail with `Permission denied`:
 
 ```bash
 dsh plugin --profile web add github:jiangyuxue666/dsh-conversation-tree
 ```
 
-To keep the shorthand without an SSH key, make git rewrite SSH to HTTPS first:
-
-```bash
-git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
-```
+If the shorthand fails, use the archive URL above.
 
 Alternatively, enter any of the addresses above in **Settings → Plugins → Add plugin**.
 

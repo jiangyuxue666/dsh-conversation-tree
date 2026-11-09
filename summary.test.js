@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { summarize, summarizeOnce } from './lib/summarize.js'
+import { HANDOFF_PROMPT, summarize, summarizeOnce } from './lib/summarize.js'
 
 // Everything below is synthetic. The fake follows the DSH Session/LLM request
 // boundary rather than reading a persisted Session or contacting a provider.
@@ -67,6 +67,22 @@ function assertSilent(calls) {
   assert.equal(calls.tools, 0)
 }
 
+// These assertions check the instruction contract, not real-model compliance.
+test('handoff instruction prioritizes current state and evidence without inventing tasks', () => {
+  for (const required of [
+    '不要执行摘要以外的操作',
+    '用户最新的明确要求',
+    '对于后来被更正或替代的方案，只保留最终状态',
+    '不能把助手先前的自述自动当成已验证事实',
+    '不要把可选建议写成用户已经要求的待办',
+    '明确区分“已发起”和“已确认完成”',
+    '不输出密钥、令牌、密码或含凭证的链接',
+    '可合并相关部分，省略没有内容的部分',
+    '若用户要求已经完成，明确说明，不自行增加任务',
+    '不为简短丢失关键事实，也不为填满结构重复内容',
+  ]) assert.ok(HANDOFF_PROMPT.includes(required), `missing handoff rule: ${required}`)
+})
+
 test('replays the exact live model context with a final summary instruction, silently', async () => {
   const f = fixture()
   const before = structuredClone({ messages, history, header, events })
@@ -84,7 +100,7 @@ test('replays the exact live model context with a final summary instruction, sil
   assert.deepEqual(request.tools, header.tools)
   const final = request.messages.at(-1)
   assert.equal(final.role, 'user')
-  assert.ok(final.content.some((block) => block.type === 'text' && /摘要|总结|summari[sz]/i.test(block.text)))
+  assert.deepEqual(final.content, [{ type: 'text', text: HANDOFF_PROMPT }])
   assert.deepEqual({ messages, history, header, events }, before, 'must not mutate the source context')
   assertSilent(f.calls)
 })
