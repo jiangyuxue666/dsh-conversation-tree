@@ -77,6 +77,22 @@ test('every module the entry imports ships with the package', async () => {
   }
 })
 
+test('the lockfile downloads from the public npm registry only', async () => {
+  // CI runs `npm ci` on GitHub-hosted runners. A lockfile generated against a
+  // regional mirror pins that mirror into every build: 0.11.2 failed when
+  // registry.npmmirror.com answered 500 for the zod tarball.
+  const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'))
+  for (const [name, entry] of Object.entries(lock.packages ?? {})) {
+    if (!entry.resolved) continue
+    const { host } = new URL(entry.resolved)
+    assert.equal(
+      host,
+      'registry.npmjs.org',
+      `${name} downloads from ${host}: regenerate the lockfile with --registry=https://registry.npmjs.org`,
+    )
+  }
+})
+
 test('the manifest describes a package installed from its repository', () => {
   // This plugin is distributed through GitHub (`dsh plugin add github:...`),
   // never through an npm registry, so it carries no publish configuration.

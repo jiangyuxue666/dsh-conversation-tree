@@ -2,6 +2,13 @@
 
 本文件记录对外可见的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循语义化版本。
 
+## 0.11.3
+
+### Fixed
+
+- CI 在 `npm ci` 这一步全部失败（0.11.2 的 6 个平台组合无一通过，测试根本没跑）。原因是 `package-lock.json` 里 13 个下载地址指向 `registry.npmmirror.com`，该镜像对 `zod` 返回 `500 [ER_NO_SUCH_TABLE]`。锁文件改用公共 `registry.npmjs.org`，CI 不再依赖国内镜像的可用性。
+- 新增一条测试：锁文件出现公共 registry 以外的下载地址就失败，避免本地镜像地址再次被带进仓库。
+
 ## 0.11.2
 
 ### Changed
